@@ -1,69 +1,127 @@
-import Image from "next/image";
+"use client";
+
+import { ArrowUpRight, Building2, Leaf } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 export default function Home() {
+  const router = useRouter();
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
+    <main className="min-h-screen bg-[#F4F0E6] text-[#172019]">
+      {/* Navigation */}
+      <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-6 md:px-10">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#173F2A] text-[#F4F0E6]">
+            <Leaf size={17} strokeWidth={2} />
+          </div>
+
+          <span className="text-lg font-semibold tracking-[-0.04em]">
+            AgriTrack
+          </span>
+        </div>
+
+        <button className="rounded-full border border-[#173F2A]/20 bg-white/30 px-4 py-2 text-sm transition hover:bg-white/60">
+          English
+        </button>
+      </nav>
+
+      {/* Main */}
+      <section className="mx-auto flex min-h-[calc(100vh-88px)] max-w-5xl flex-col justify-center px-6 pb-16 pt-8 md:px-10">
+        {/* Small label */}
+        <div className="mb-8 flex items-center gap-3">
+          <span className="h-2 w-2 rounded-full bg-[#D78A32]" />
+
+          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#5F8F45]">
+            Smart procurement platform
+          </span>
+        </div>
+
+        {/* Hero */}
+        <div>
+          <h1 className="max-w-4xl text-[clamp(4rem,10vw,8rem)] font-semibold leading-[0.84] tracking-[-0.08em]">
+            Know your
+            <br />
+            <span className="text-[#173F2A]">turn.</span>
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+
+          <p className="mt-8 max-w-2xl text-lg leading-8 text-[#172019]/60 md:text-xl">
+            Book your procurement slot, follow the live queue, and track your
+            procurement and payment — all in one place.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        {/* Divider */}
+        <div className="my-12 h-px w-full bg-[#173F2A]/15" />
+
+        {/* Role selection */}
+        <div>
+          <p className="mb-5 text-xs font-semibold uppercase tracking-[0.18em] text-[#172019]/45">
+            Continue as
+          </p>
+
+          <div className="space-y-3">
+            {/* Farmer */}
+            <button
+              onClick={() => router.push("/farmer/login")}
+              className="group flex w-full items-center justify-between rounded-[14px] border border-[#173F2A]/20 bg-[#173F2A] px-6 py-5 text-left text-[#F4F0E6] transition-all duration-300 hover:bg-[#204D34] md:px-8 md:py-6"
+            >
+              <div className="flex items-center gap-5">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] bg-[#F4F0E6]/10">
+                  <Leaf size={20} strokeWidth={1.8} />
+                </div>
+
+                <div>
+                  <div className="text-xl font-medium tracking-[-0.03em] md:text-2xl">
+                    I&apos;m a Farmer
+                  </div>
+
+                  <div className="mt-1 text-sm text-[#F4F0E6]/55">
+                    Book slots · Track queue · Follow payment
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#D78A32] text-[#172019] transition-transform duration-300 group-hover:translate-x-1">
+                <ArrowUpRight size={20} />
+              </div>
+            </button>
+
+            {/* Procurement Centre */}
+            <button
+              onClick={() => router.push("/centre/login")}
+              className="group flex w-full items-center justify-between rounded-[14px] border border-[#173F2A]/20 bg-white/35 px-6 py-5 text-left transition-all duration-300 hover:bg-white/70 md:px-8 md:py-6"
+            >
+              <div className="flex items-center gap-5">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] border border-[#173F2A]/15 bg-[#D9C99A]/25">
+                  <Building2 size={20} strokeWidth={1.8} />
+                </div>
+
+                <div>
+                  <div className="text-xl font-medium tracking-[-0.03em] md:text-2xl">
+                    Procurement Centre
+                  </div>
+
+                  <div className="mt-1 text-sm text-[#172019]/50">
+                    Manage queue · Procurement · Payments
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[#173F2A]/20 text-[#173F2A] transition-all duration-300 group-hover:translate-x-1 group-hover:bg-[#173F2A] group-hover:text-[#F4F0E6]">
+                <ArrowUpRight size={20} />
+              </div>
+            </button>
+          </div>
         </div>
-      </main>
-    </div>
+
+        {/* Bottom information */}
+        <div className="mt-10 flex flex-wrap gap-x-6 gap-y-2 text-xs uppercase tracking-[0.13em] text-[#172019]/35">
+          <span>Slot booking</span>
+          <span>Live queues</span>
+          <span>Procurement tracking</span>
+          <span>Transparent payments</span>
+        </div>
+      </section>
+    </main>
   );
 }
