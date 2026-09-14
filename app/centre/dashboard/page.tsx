@@ -1614,9 +1614,14 @@ setAssessmentSaved(false);
         <div className="mb-10 flex flex-col justify-between gap-6 md:flex-row md:items-end">
           <div>
             <button
-              onClick={() =>
-                router.push("/")
-              }
+              onClick={async () => {
+  await supabase.auth.signOut();
+
+  localStorage.removeItem("agritrack-centre-id");
+  localStorage.removeItem("agritrack-centre-name");
+
+  router.replace("/");
+}}
               className="mb-6 flex items-center gap-2 text-sm text-[#172019]/45 transition hover:text-[#173F2A]"
             >
               <ArrowLeft size={15} />
