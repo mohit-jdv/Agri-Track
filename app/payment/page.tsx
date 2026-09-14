@@ -12,13 +12,28 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import {
-  getProcurementByToken,
-  type ProcurementData,
-} from "@/lib/demo-store";
+import { supabase } from "@/lib/supabase";
 
-const DEFAULT_TOKEN = "A-105";
 const ACTIVE_TOKEN_KEY = "agritrack-active-token";
+
+type ProcurementData = {
+  token: string;
+  status:
+    | "booking"
+    | "arrived"
+    | "weighing"
+    | "quality"
+    | "completed"
+    | "processing"
+    | "paid";
+  paymentStatus: "Pending" | "Processing" | "Received";
+  finalPrice: number;
+  qualityGrade: string;
+  assessedQuantity: number;
+  paymentAmount: number;
+  crop: string;
+  centreName: string;
+};
 
 type PaymentStep = {
   title: string;
@@ -33,43 +48,125 @@ export default function PaymentPage() {
     useState<ProcurementData | null>(null);
 
   useEffect(() => {
-  const loadProcurement = () => {
-    const activeToken =
-      localStorage.getItem(ACTIVE_TOKEN_KEY) ?? DEFAULT_TOKEN;
+  let realtimeChannel: ReturnType<typeof supabase.channel> | null = null;
 
-    setProcurement(getProcurementByToken(activeToken));
+  async function loadProcurement() {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session?.user) {
+      setProcurement(null);
+      return;
+    }
+
+    const activeToken = window.localStorage.getItem(
+      ACTIVE_TOKEN_KEY
+    );
+
+    if (!activeToken) {
+      setProcurement(null);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("procurements")
+      .select(`
+        token,
+        status,
+        payment_status,
+        final_price,
+        final_amount,
+        actual_quantity,
+        grade,
+        booking_id
+      `)
+      .eq("token", activeToken)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Payment procurement error:", error);
+      setProcurement(null);
+      return;
+    }
+
+    if (!data) {
+      setProcurement(null);
+      return;
+    }
+
+    const { data: booking } = await supabase
+      .from("bookings")
+      .select(`
+        crop,
+        centre_name
+      `)
+      .eq("id", data.booking_id)
+      .maybeSingle();
+
+    setProcurement({
+      token: data.token,
+      status: data.status as ProcurementData["status"],
+      paymentStatus: data.payment_status ?? "Pending",
+      finalPrice: Number(data.final_price ?? 0),
+      qualityGrade: data.grade ?? "Not assessed",
+      assessedQuantity: Number(data.actual_quantity ?? 0),
+      paymentAmount: Number(data.final_amount ?? 0),
+      crop: booking?.crop ?? "Unknown crop",
+      centreName: booking?.centre_name ?? "Procurement Centre",
+    });
+  }
+
+  void loadProcurement();
+
+  realtimeChannel = supabase
+    .channel("farmer-payment-realtime")
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "procurements",
+      },
+      (payload) => {
+        const changedToken =
+          (payload.new as { token?: string })?.token ??
+          (payload.old as { token?: string })?.token;
+
+        const activeToken = window.localStorage.getItem(
+          ACTIVE_TOKEN_KEY
+        );
+
+        if (changedToken === activeToken) {
+          void loadProcurement();
+        }
+      }
+    )
+    .subscribe((status) => {
+      console.log(
+        "Payment realtime status:",
+        status
+      );
+    });
+
+  const handleActiveTokenUpdate = () => {
+    void loadProcurement();
   };
-
-  loadProcurement();
-
-  const handleUpdate = () => {
-    loadProcurement();
-  };
-
-  window.addEventListener(
-    "agritrack-procurement-updated",
-    handleUpdate
-  );
 
   window.addEventListener(
     "agritrack-active-token-updated",
-    handleUpdate
+    handleActiveTokenUpdate
   );
-
-  window.addEventListener("storage", handleUpdate);
 
   return () => {
     window.removeEventListener(
-      "agritrack-procurement-updated",
-      handleUpdate
-    );
-
-    window.removeEventListener(
       "agritrack-active-token-updated",
-      handleUpdate
+      handleActiveTokenUpdate
     );
 
-    window.removeEventListener("storage", handleUpdate);
+    if (realtimeChannel) {
+      void supabase.removeChannel(realtimeChannel);
+    }
   };
 }, []);
 
@@ -281,7 +378,7 @@ const paymentSteps = useMemo<PaymentStep[]>(() => {
             </p>
 
             <p className="mt-1 text-sm text-[#172019]/50">
-              Onion · Lasalgaon
+              {procurement.crop} · {procurement.centreName}
             </p>
           </div>
         </div>

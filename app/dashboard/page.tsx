@@ -15,12 +15,6 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  getNotifications,
-  saveNotifications,
-  getQueue,
-  type Notification,
-} from "@/lib/demo-store";
 import { supabase } from "@/lib/supabase";
 
 export default function Dashboard() {
@@ -29,97 +23,274 @@ export default function Dashboard() {
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifications, setNotifications] = useState<
+    { id: string; title: string; message: string; time: string; read: boolean }[]
+  >([]);
   const [farmerName, setFarmerName] = useState("Farmer");
+  const [queue, setQueue] = useState<QueueEntry[]>([]);
+  const [activeToken, setActiveToken] = useState<string | null>(null);
+  const [booking, setBooking] = useState<{
+    crop: string;
+    quantity: number | string;
+    centre_name: string;
+    booking_date: string;
+    slot: string;
+    indicative_price: number | null;
+  } | null>(null);
+  const [procurement, setProcurement] = useState<{
+    status: ProcurementStatus | null;
+    actual_quantity: number | null;
+    grade: string | null;
+    final_price: number | null;
+    final_amount: number | null;
+    payment_status: "Pending" | "Processing" | "Received" | null;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  /*
-   * Do not call getQueue() inside useState().
-   * getQueue() can read localStorage, which can cause
-   * server/client hydration mismatches.
-   */
-  const [queue, setQueue] =
-    useState<ReturnType<typeof getQueue>>([]);
+  type QueueEntry = {
+    id: string;
+    booking_id: string;
+    farmer_id: string;
+    token: string;
+    centre_name: string;
+    queue_position: number | null;
+    status: "Waiting" | "Arrived" | "Serving" | "Completed" | "Cancelled";
+    estimated_wait_minutes: number | null;
+    created_at: string;
+  };
 
-  const [activeToken] = useState<string | null>(null);
+  type ProcurementStatus =
+    | "booking"
+    | "arrived"
+    | "weighing"
+    | "quality"
+    | "completed"
+    | "processing"
+    | "paid";
 
-  useEffect(() => {
-  const loadProfile = async () => {
+  const loadDashboard = async () => {
     const {
       data: { user },
     } = await supabase.auth.getUser();
 
-    if (!user) return;
-
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("name")
-      .eq("id", user.id)
-      .single();
-
-    if (profile?.name) {
-      setFarmerName(profile.name);
+    if (!user) {
+      router.replace("/farmer/login");
+      return;
     }
+
+    const [{ data: profile }, { data: bookings }] = await Promise.all([
+      supabase.from("profiles").select("name").eq("id", user.id).maybeSingle(),
+      supabase
+        .from("bookings")
+        .select(
+          "id, token, crop, quantity, centre_name, booking_date, slot, indicative_price, created_at"
+        )
+        .eq("farmer_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(10),
+    ]);
+
+    if (profile?.name) setFarmerName(profile.name);
+
+    const storedToken = window.localStorage.getItem("agritrack-active-token");
+    const today = new Date().toISOString().slice(0, 10);
+
+    const selectedBooking =
+      bookings?.find((item) => item.token === storedToken) ??
+      bookings?.find((item) => item.booking_date === today) ??
+      bookings?.[0] ??
+      null;
+
+    const token = selectedBooking?.token ?? null;
+    setActiveToken(token);
+
+    if (selectedBooking) {
+      setBooking({
+        crop: selectedBooking.crop,
+        quantity: selectedBooking.quantity,
+        centre_name: selectedBooking.centre_name,
+        booking_date: selectedBooking.booking_date,
+        slot: selectedBooking.slot,
+        indicative_price: selectedBooking.indicative_price,
+      });
+    } else {
+      setBooking(null);
+      setProcurement(null);
+      setQueue([]);
+      setNotifications([]);
+      setLoading(false);
+      return;
+    }
+
+    const { data: liveQueue, error: queueError } =
+      await supabase.rpc("get_live_queue");
+
+    if (queueError) {
+      console.error("Dashboard queue error:", queueError);
+      setQueue([]);
+    } else {
+      setQueue((liveQueue ?? []) as QueueEntry[]);
+    }
+
+    const { data: procurementRow, error: procurementError } = await supabase
+      .from("procurements")
+      .select(
+        "status, actual_quantity, grade, final_price, final_amount, payment_status"
+      )
+      .eq("token", token)
+      .maybeSingle();
+
+    if (procurementError) {
+      console.error("Dashboard procurement error:", procurementError);
+      setProcurement(null);
+    } else {
+      setProcurement(
+        procurementRow
+          ? {
+              status: procurementRow.status as ProcurementStatus,
+              actual_quantity: procurementRow.actual_quantity,
+              grade: procurementRow.grade,
+              final_price: procurementRow.final_price,
+              final_amount: procurementRow.final_amount,
+              payment_status: procurementRow.payment_status,
+            }
+          : null
+      );
+    }
+
+    setLoading(false);
   };
 
-  loadProfile();
+  useEffect(() => {
+    void loadDashboard();
 
-  const updateDashboard = () => {
-    setNotifications(getNotifications());
-    setQueue(getQueue());
-  };
+    const refresh = () => {
+      void loadDashboard();
+    };
 
-  window.addEventListener("storage", updateDashboard);
+    window.addEventListener("agritrack-active-token-updated", refresh);
+    window.addEventListener("agritrack-queue-updated", refresh);
+    window.addEventListener("agritrack-procurement-updated", refresh);
 
-  window.addEventListener(
-    "agritrack-notifications-updated",
-    updateDashboard
-  );
+    const queueChannel = supabase
+      .channel("farmer-dashboard-queue")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "queue_entries",
+        },
+        refresh
+      )
+      .subscribe();
 
-  window.addEventListener(
-    "agritrack-queue-updated",
-    updateDashboard
-  );
+    const procurementChannel = supabase
+      .channel("farmer-dashboard-procurement")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "procurements",
+        },
+        refresh
+      )
+      .subscribe();
 
-  return () => {
-    window.removeEventListener("storage", updateDashboard);
+    return () => {
+      window.removeEventListener("agritrack-active-token-updated", refresh);
+      window.removeEventListener("agritrack-queue-updated", refresh);
+      window.removeEventListener("agritrack-procurement-updated", refresh);
+      void supabase.removeChannel(queueChannel);
+      void supabase.removeChannel(procurementChannel);
+    };
+  }, []);
 
-    window.removeEventListener(
-      "agritrack-notifications-updated",
-      updateDashboard
-    );
-
-    window.removeEventListener(
-      "agritrack-queue-updated",
-      updateDashboard
-    );
-  };
-}, []);
-  const yourFarmer = queue.find(
-    (farmer) => farmer.token === activeToken
-  );
-
+  const yourFarmer = queue.find((farmer) => farmer.token === activeToken);
   const yourToken = yourFarmer?.token ?? activeToken;
 
-  const servingFarmer = queue.find(
-    (farmer) => farmer.status === "Serving"
-  );
+  const servingFarmer = queue.find((farmer) => farmer.status === "Serving");
 
   const farmersAhead = yourFarmer
-    ? queue.filter(
-        (farmer) =>
-          farmer.status === "Waiting" &&
-          farmer.token !== yourToken
-      ).length
+    ? Math.max((yourFarmer.queue_position ?? 1) - 1, 0)
     : 0;
 
   const estimatedWait = Math.max(
-    farmersAhead * 4,
+    yourFarmer?.estimated_wait_minutes ?? 0,
     0
   );
+
+  const derivedNotifications = [];
+
+  if (yourFarmer?.status === "Serving") {
+    derivedNotifications.push({
+      id: "serving",
+      title: "Your turn has arrived",
+      message: `Token ${yourFarmer.token} is now being served.`,
+      time: "Live",
+      read: false,
+    });
+  } else if (yourFarmer?.status === "Arrived") {
+    derivedNotifications.push({
+      id: "arrived",
+      title: "You are checked in",
+      message: `Token ${yourFarmer.token} is marked as arrived at the centre.`,
+      time: "Live",
+      read: false,
+    });
+  } else if (yourFarmer?.status === "Waiting") {
+    derivedNotifications.push({
+      id: "waiting",
+      title: "Queue update",
+      message: `Estimated waiting time is ${estimatedWait} minutes.`,
+      time: "Live",
+      read: false,
+    });
+  }
+
+  if (procurement?.payment_status === "Received") {
+    derivedNotifications.push({
+      id: "payment",
+      title: "Payment received",
+      message: "Your procurement payment has been marked as received.",
+      time: "Live",
+      read: false,
+    });
+  } else if (procurement?.payment_status === "Processing") {
+    derivedNotifications.push({
+      id: "payment-processing",
+      title: "Payment processing",
+      message: "Your payment is currently being processed.",
+      time: "Live",
+      read: false,
+    });
+  }
+
+  useEffect(() => {
+    setNotifications(derivedNotifications);
+  }, [
+    yourFarmer?.status,
+    yourFarmer?.token,
+    estimatedWait,
+    procurement?.payment_status,
+  ]);
 
   const unreadCount = notifications.filter(
     (notification) => !notification.read
   ).length;
+
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-[#F4F0E6] text-[#172019]">
+        <section className="mx-auto max-w-7xl px-6 py-20 md:px-10">
+          <p className="text-sm text-[#172019]/50">
+            Loading your AgriTrack dashboard…
+          </p>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-[#F4F0E6] text-[#172019]">
@@ -213,16 +384,12 @@ export default function Dashboard() {
                       <button
                         type="button"
                         onClick={() => {
-                          const readNotifications =
-                            notifications.map(
-                              (notification) => ({
-                                ...notification,
-                                read: true,
-                              })
-                            );
-
-                          saveNotifications(readNotifications);
-                          setNotifications(readNotifications);
+                          setNotifications((current) =>
+                            current.map((notification) => ({
+                              ...notification,
+                              read: true,
+                            }))
+                          );
                         }}
                         className="text-xs font-medium text-[#173F2A] hover:underline"
                       >
@@ -550,31 +717,45 @@ export default function Dashboard() {
               <InfoRow
                 icon={<Leaf size={18} />}
                 label="Crop"
-                value="Onion"
+                value={booking ? booking.crop : "—"}
               />
 
               <InfoRow
                 icon={<Wallet size={18} />}
                 label="Quantity"
-                value="50 quintals"
+                value={
+                  booking
+                    ? `${booking.quantity} quintals`
+                    : "—"
+                }
               />
 
               <InfoRow
                 icon={<CalendarDays size={18} />}
                 label="Date"
-                value="12 September 2026"
+                value={
+                  booking
+                    ? new Date(
+                        `${booking.booking_date}T00:00:00`
+                      ).toLocaleDateString("en-IN", {
+                        day: "numeric",
+                        month: "long",
+                        year: "numeric",
+                      })
+                    : "—"
+                }
               />
 
               <InfoRow
                 icon={<Clock3 size={18} />}
                 label="Slot"
-                value="10:00 AM – 11:00 AM"
+                value={booking?.slot ?? "—"}
               />
 
               <InfoRow
                 icon={<MapPin size={18} />}
                 label="Centre"
-                value="Lasalgaon Procurement Centre"
+                value={booking?.centre_name ?? "—"}
               />
             </div>
 
@@ -585,7 +766,9 @@ export default function Dashboard() {
 
               <div className="mt-1 flex items-baseline gap-2">
                 <span className="text-3xl font-semibold tracking-[-0.05em] text-[#173F2A]">
-                  ₹4,400
+                  {booking?.indicative_price != null
+                    ? `₹${Number(booking.indicative_price).toLocaleString("en-IN")}`
+                    : "—"}
                 </span>
 
                 <span className="text-sm text-[#172019]/45">
@@ -629,34 +812,55 @@ export default function Dashboard() {
               <JourneyStep
                 number="01"
                 label="Booking confirmed"
-                completed
+                completed={Boolean(procurement?.status)}
+                active={!procurement?.status}
               />
 
               <JourneyStep
                 number="02"
                 label="Arrived at centre"
-                completed
+                completed={
+                  ["weighing", "quality", "completed", "processing", "paid"].includes(
+                    procurement?.status ?? ""
+                  )
+                }
+                active={procurement?.status === "arrived"}
               />
 
               <JourneyStep
                 number="03"
                 label="Weighing"
-                active
+                completed={["quality", "completed", "processing", "paid"].includes(
+                  procurement?.status ?? ""
+                )}
+                active={procurement?.status === "weighing"}
               />
 
               <JourneyStep
                 number="04"
                 label="Quality assessment"
+                completed={["completed", "processing", "paid"].includes(
+                  procurement?.status ?? ""
+                )}
+                active={procurement?.status === "quality"}
               />
 
               <JourneyStep
                 number="05"
                 label="Procurement completed"
+                completed={["processing", "paid"].includes(
+                  procurement?.status ?? ""
+                )}
+                active={procurement?.status === "completed"}
               />
 
               <JourneyStep
                 number="06"
                 label="Payment received"
+                completed={procurement?.status === "paid"}
+                active={
+                  procurement?.status === "processing"
+                }
               />
             </div>
           </div>

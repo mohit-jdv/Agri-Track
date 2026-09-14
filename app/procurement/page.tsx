@@ -15,11 +15,32 @@ import {
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useRouter } from "next/navigation";
-import {
-  getProcurementByToken,
-  type ProcurementData,
-  type ProcurementStatus,
-} from "@/lib/demo-store";
+import { supabase } from "@/lib/supabase";
+
+type ProcurementStatus =
+  | "booking"
+  | "arrived"
+  | "weighing"
+  | "quality"
+  | "completed"
+  | "processing"
+  | "paid";
+
+type ProcurementData = {
+  token: string;
+  status: ProcurementStatus;
+  paymentStatus: "Pending" | "Processing" | "Received";
+  finalPrice: number;
+  qualityGrade: string;
+  assessedQuantity: number;
+  paymentAmount: number;
+  qualityNote: string;
+  crop: string;
+  bookedQuantity: number;
+  slot: string;
+  centreName: string;
+  indicativePrice: number;
+};
 
 export default function ProcurementPage() {
   const searchParams = useSearchParams();
@@ -29,29 +50,131 @@ const tokenFromUrl = searchParams.get("token");
   useState<ProcurementData | null>(null);
 
 useEffect(() => {
-  const token = tokenFromUrl ?? "A-105";
+  let realtimeChannel: ReturnType<typeof supabase.channel> | null = null;
 
-  const loadProcurement = () => {
-    const data = getProcurementByToken(token);
-    setProcurement(data);
-  };
+  async function loadProcurement() {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
 
-  loadProcurement();
+    if (!session?.user) {
+      setProcurement(null);
+      return;
+    }
 
-  window.addEventListener(
-    "agritrack-procurement-updated",
-    loadProcurement
-  );
+    const activeToken =
+      tokenFromUrl ??
+      window.localStorage.getItem("agritrack-active-token");
 
-  window.addEventListener("storage", loadProcurement);
+    if (!activeToken) {
+      setProcurement(null);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("procurements")
+      .select(`
+        token,
+        status,
+        payment_status,
+        final_price,
+        final_amount,
+        actual_quantity,
+        grade,
+        booking_id
+      `)
+      .eq("token", activeToken)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Procurement load error:", error);
+      setProcurement(null);
+      return;
+    }
+
+    if (!data) {
+      console.log("No procurement found for token:", activeToken);
+      setProcurement(null);
+      return;
+    }
+
+    const { data: booking, error: bookingError } = await supabase
+      .from("bookings")
+      .select(`
+        crop,
+        quantity,
+        slot,
+        centre_name,
+        indicative_price
+      `)
+      .eq("id", data.booking_id)
+      .maybeSingle();
+
+    if (bookingError) {
+      console.error("Booking load error:", bookingError);
+    }
+
+    const finalPrice = Number(data.final_price ?? 0);
+    const actualQuantity = Number(data.actual_quantity ?? 0);
+
+    setProcurement({
+      token: data.token,
+      status: data.status as ProcurementStatus,
+      paymentStatus: data.payment_status ?? "Pending",
+      finalPrice,
+      qualityGrade: data.grade ?? "Not assessed",
+      assessedQuantity: actualQuantity,
+      paymentAmount: Number(
+        data.final_amount ?? finalPrice * actualQuantity
+      ),
+      qualityNote:
+        data.grade
+          ? "Final price recorded after quality assessment."
+          : "Quality assessment is pending.",
+      crop: booking?.crop ?? "Unknown crop",
+      bookedQuantity: Number(booking?.quantity ?? 0),
+      slot: booking?.slot ?? "Not available",
+      centreName: booking?.centre_name ?? "Procurement Centre",
+      indicativePrice: Number(booking?.indicative_price ?? 0),
+    });
+  }
+
+  void loadProcurement();
+
+  realtimeChannel = supabase
+    .channel("farmer-procurement-realtime")
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "procurements",
+      },
+      (payload) => {
+        const changedToken =
+          (payload.new as { token?: string })?.token ??
+          (payload.old as { token?: string })?.token;
+
+        const activeToken =
+          tokenFromUrl ??
+          window.localStorage.getItem("agritrack-active-token");
+
+        if (changedToken === activeToken) {
+          void loadProcurement();
+        }
+      }
+    )
+    .subscribe((status) => {
+      console.log(
+        "Procurement realtime status:",
+        status
+      );
+    });
 
   return () => {
-    window.removeEventListener(
-      "agritrack-procurement-updated",
-      loadProcurement
-    );
-
-    window.removeEventListener("storage", loadProcurement);
+    if (realtimeChannel) {
+      void supabase.removeChannel(realtimeChannel);
+    }
   };
 }, [tokenFromUrl]);
 
@@ -178,27 +301,31 @@ const steps = stepData.map((step, index) => ({
             </p>
 
             <p className="mt-1 text-sm text-[#172019]/50">
-              Lasalgaon Procurement Centre
+              {procurement.centreName}
             </p>
           </div>
         </div>
 
         {/* Booking summary */}
         <div className="mt-8 grid gap-3 md:grid-cols-4">
-          <InfoItem label="Crop" value="Onion" icon={<Leaf size={17} />} />
+          <InfoItem
+  label="Crop"
+  value={procurement.crop}
+  icon={<Leaf size={17} />}
+/>
           <InfoItem
             label="Booked quantity"
-            value="50 quintals"
+            value={`${procurement.bookedQuantity} quintals`}
             icon={<Scale size={17} />}
           />
           <InfoItem
             label="Slot"
-            value="10:00 – 11:00 AM"
+            value={procurement.slot}
             icon={<Clock3 size={17} />}
           />
           <InfoItem
             label="Indicative price"
-            value="₹4,400 / q"
+            value={`₹${procurement.indicativePrice.toLocaleString("en-IN")} / q`}
             icon={<IndianRupee size={17} />}
           />
         </div>
@@ -368,7 +495,7 @@ const steps = stepData.map((step, index) => ({
               </div>
 
               <p className="mt-8 text-4xl font-semibold tracking-[-0.05em] text-[#173F2A]">
-                ₹4,400
+                ₹{procurement.indicativePrice.toLocaleString("en-IN")}
                 <span className="ml-2 text-base font-normal text-[#172019]/40">
                   / quintal
                 </span>
@@ -440,8 +567,8 @@ const steps = stepData.map((step, index) => ({
               <p className="text-xs text-[#172019]/40">Price difference</p>
 
               <p className="mt-1 text-2xl font-semibold tracking-[-0.04em]">
-                {Number(procurement.finalPrice) - 4400 < 0 ? "−" : "+"}₹
-{Math.abs(Number(procurement.finalPrice) - 4400).toLocaleString("en-IN")} / q
+                {Number(procurement.finalPrice) - procurement.indicativePrice < 0 ? "−" : "+"}₹
+{Math.abs(Number(procurement.finalPrice) - procurement.indicativePrice).toLocaleString("en-IN")} / q
               </p>
 
               <p className="mt-1 text-xs text-[#172019]/40">

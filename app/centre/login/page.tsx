@@ -3,6 +3,7 @@
 import { ArrowRight, Building2, Leaf, LockKeyhole, Mail } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 export default function CentreLoginPage() {
   const router = useRouter();
@@ -10,22 +11,49 @@ export default function CentreLoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  function handleLogin() {
+  async function handleLogin() {
     setError("");
 
-    // Demo centre credentials
-    if (
-      email.trim().toLowerCase() === "centre@agritrack.demo" &&
-      password === "123456"
-    ) {
-      router.push("/centre/dashboard");
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanEmail || !password) {
+      setError("Please enter your centre email and password.");
       return;
     }
 
-    setError(
-      "Invalid centre credentials. Please use the demo account shown below."
-    );
+    setLoading(true);
+
+    const { data, error: loginError } =
+      await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
+
+    if (loginError || !data.user) {
+      setLoading(false);
+      setError("Invalid centre email or password.");
+      return;
+    }
+
+    const { data: centre, error: centreError } = await supabase
+      .from("centres")
+      .select("id, name")
+      .eq("auth_user_id", data.user.id)
+      .maybeSingle();
+
+    if (centreError || !centre) {
+      await supabase.auth.signOut();
+      setLoading(false);
+      setError("This account is not linked to a procurement centre.");
+      return;
+    }
+
+    localStorage.setItem("agritrack-centre-id", centre.id);
+    localStorage.setItem("agritrack-centre-name", centre.name);
+
+    router.push("/centre/dashboard");
   }
 
   return (
@@ -120,7 +148,7 @@ export default function CentreLoginPage() {
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="centre@agritrack.demo"
+                    placeholder="lasalgaon@agritrack.demo"
                     className="h-12 w-full rounded-[11px] border border-[#173F2A]/15 bg-[#F4F0E6]/70 pl-11 pr-4 text-sm outline-none transition placeholder:text-[#172019]/25 focus:border-[#173F2A]/40"
                   />
                 </div>
@@ -145,7 +173,7 @@ export default function CentreLoginPage() {
                     placeholder="Enter password"
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
-                        handleLogin();
+                        void handleLogin();
                       }
                     }}
                     className="h-12 w-full rounded-[11px] border border-[#173F2A]/15 bg-[#F4F0E6]/70 pl-11 pr-4 text-sm outline-none transition placeholder:text-[#172019]/25 focus:border-[#173F2A]/40"
@@ -162,10 +190,13 @@ export default function CentreLoginPage() {
 
               {/* Button */}
               <button
-                onClick={handleLogin}
-                className="group flex h-13 w-full items-center justify-between rounded-[12px] bg-[#173F2A] px-5 text-left text-[#F4F0E6] transition-all duration-300 hover:bg-[#204D34]"
+                onClick={() => void handleLogin()}
+                disabled={loading}
+                className="group flex h-13 w-full items-center justify-between rounded-[12px] bg-[#173F2A] px-5 text-left text-[#F4F0E6] transition-all duration-300 hover:bg-[#204D34] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <span className="font-medium">Continue to centre</span>
+                <span className="font-medium">
+                  {loading ? "Signing in..." : "Continue to centre"}
+                </span>
 
                 <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#D78A32] text-[#172019] transition-transform duration-300 group-hover:translate-x-1">
                   <ArrowRight size={18} />
@@ -173,19 +204,35 @@ export default function CentreLoginPage() {
               </button>
             </div>
 
-            {/* Demo account */}
+            {/* Demo accounts */}
             <div className="mt-7 border-t border-[#173F2A]/10 pt-5">
               <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#172019]/35">
-                Demo account
+                Demo accounts
               </p>
 
-              <div className="mt-3 space-y-1 text-sm">
+              <div className="mt-3 space-y-2 text-sm">
                 <p>
-                  <span className="text-[#172019]/45">Email:</span>{" "}
-                  <span className="font-medium">centre@agritrack.demo</span>
+                  <span className="text-[#172019]/45">Lasalgaon:</span>{" "}
+                  <span className="font-medium">
+                    lasalgaon@agritrack.demo
+                  </span>
                 </p>
 
                 <p>
+                  <span className="text-[#172019]/45">Manmad:</span>{" "}
+                  <span className="font-medium">
+                    manmad@agritrack.demo
+                  </span>
+                </p>
+
+                <p>
+                  <span className="text-[#172019]/45">Pune:</span>{" "}
+                  <span className="font-medium">
+                    pune@agritrack.demo
+                  </span>
+                </p>
+
+                <p className="pt-1">
                   <span className="text-[#172019]/45">Password:</span>{" "}
                   <span className="font-medium">123456</span>
                 </p>
