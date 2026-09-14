@@ -23,7 +23,9 @@ export default function CentreLoginPage() {
       return;
     }
 
-    setError("Invalid centre credentials. Use the demo account shown below.");
+    setError(
+      "Invalid centre credentials. Please use the demo account shown below."
+    );
   }
 
   return (
@@ -73,7 +75,7 @@ export default function CentreLoginPage() {
             </h1>
 
             <p className="mt-7 max-w-xl text-base leading-7 text-[#172019]/55 md:text-lg">
-              Manage today's booked farmers, control the live queue, record
+              Manage today&apos;s booked farmers, control the live queue, record
               procurement results, and keep payment information up to date.
             </p>
 
@@ -180,9 +182,7 @@ export default function CentreLoginPage() {
               <div className="mt-3 space-y-1 text-sm">
                 <p>
                   <span className="text-[#172019]/45">Email:</span>{" "}
-                  <span className="font-medium">
-                    centre@agritrack.demo
-                  </span>
+                  <span className="font-medium">centre@agritrack.demo</span>
                 </p>
 
                 <p>

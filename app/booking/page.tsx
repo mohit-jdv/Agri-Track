@@ -12,7 +12,7 @@ import {
   Wheat,
 } from "lucide-react";
 import { useState } from "react";
-import { getQueue, saveQueue } from "@/lib/demo-store";
+import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 
 type Step = "crop" | "centre" | "slot" | "confirm" | "success";
@@ -115,44 +115,65 @@ const [error, setError] = useState("");
     setStep("confirm");
   };
 
-  const confirmBooking = () => {
+  const confirmBooking = async () => {
   setError("");
 
-  const currentQueue = getQueue();
+  if (!selectedCentre) {
+    setError("Please select a procurement centre.");
+    return;
+  }
 
-  const highestTokenNumber = currentQueue.reduce(
-    (highest, farmer) => {
-      const number = Number(farmer.token.replace("A-", ""));
-      return Number.isFinite(number)
-        ? Math.max(highest, number)
-        : highest;
-    },
-    0
-  );
+  if (!selectedSlot) {
+    setError("Please select a time slot.");
+    return;
+  }
 
-  const newToken = `A-${String(highestTokenNumber + 1).padStart(3, "0")}`;
+  setError("Booking your slot...");
 
-  const newFarmer = {
-    token: newToken,
-    name: "Ramesh Patil",
-    crop,
-    quantity: `${quantity} quintals`,
-    slot: selectedSlot,
-    status: "Waiting" as const,
-  };
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
 
-  saveQueue([...currentQueue, newFarmer]);
+  if (userError || !user) {
+    setError("Your session has expired. Please login again.");
+    return;
+  }
+
+  const { data: booking, error: bookingError } = await supabase
+    .from("bookings")
+    .insert({
+      farmer_id: user.id,
+      crop,
+      quantity: Number(quantity),
+      centre_name: selectedCentre.name,
+      booking_date: "2026-09-12",
+      slot: selectedSlot,
+      indicative_price: Number(
+        selectedCentre.price.replace(/[₹,]/g, "")
+      ),
+      status: "Waiting",
+    })
+    .select()
+    .single();
+
+  if (bookingError) {
+    console.error(bookingError);
+    setError("Unable to create your booking. Please try again.");
+    return;
+  }
 
   localStorage.setItem(
     "agritrack-active-token",
-    newToken
+    booking.token
   );
 
   window.dispatchEvent(
     new Event("agritrack-active-token-updated")
   );
 
-  setBookingToken(newToken);
+  setBookingToken(booking.token);
+  setError("");
   setStep("success");
 };
 
@@ -200,7 +221,6 @@ const [error, setError] = useState("");
             quantity={quantity}
             centre={selectedCentre}
             slot={selectedSlot}
-            onDashboard={() => router.push("/dashboard")}
             onQueue={() => router.push("/queue")}
             onNewBooking={resetBooking}
           />
@@ -997,14 +1017,12 @@ function SideStep({
   );
 }
 
-/* SUCCESS SCREEN */
 function SuccessScreen({
   token,
   crop,
   quantity,
   centre,
   slot,
-  onDashboard,
   onQueue,
   onNewBooking,
 }: {
@@ -1013,7 +1031,6 @@ function SuccessScreen({
   quantity: string;
   centre: Centre | null;
   slot: string;
-  onDashboard: () => void;
   onQueue: () => void;
   onNewBooking: () => void;
 }) {

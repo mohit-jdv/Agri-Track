@@ -21,70 +21,84 @@ import {
   getQueue,
   type Notification,
 } from "@/lib/demo-store";
+import { supabase } from "@/lib/supabase";
 
 export default function Dashboard() {
   const router = useRouter();
 
+
   const [menuOpen, setMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [farmerName, setFarmerName] = useState("Farmer");
 
   /*
-   * IMPORTANT:
    * Do not call getQueue() inside useState().
-   * getQueue() can read localStorage, which would make
-   * server HTML and client HTML different during hydration.
+   * getQueue() can read localStorage, which can cause
+   * server/client hydration mismatches.
    */
-  const [queue, setQueue] = useState<ReturnType<typeof getQueue>>([]);
+  const [queue, setQueue] =
+    useState<ReturnType<typeof getQueue>>([]);
+
+  const [activeToken] = useState<string | null>(null);
 
   useEffect(() => {
+  const loadProfile = async () => {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) return;
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("name")
+      .eq("id", user.id)
+      .single();
+
+    if (profile?.name) {
+      setFarmerName(profile.name);
+    }
+  };
+
+  loadProfile();
+
+  const updateDashboard = () => {
     setNotifications(getNotifications());
     setQueue(getQueue());
+  };
 
-    const updateDashboard = () => {
-      setNotifications(getNotifications());
-      setQueue(getQueue());
-    };
+  window.addEventListener("storage", updateDashboard);
 
-    window.addEventListener("storage", updateDashboard);
+  window.addEventListener(
+    "agritrack-notifications-updated",
+    updateDashboard
+  );
 
-    window.addEventListener(
+  window.addEventListener(
+    "agritrack-queue-updated",
+    updateDashboard
+  );
+
+  return () => {
+    window.removeEventListener("storage", updateDashboard);
+
+    window.removeEventListener(
       "agritrack-notifications-updated",
       updateDashboard
     );
 
-    window.addEventListener(
+    window.removeEventListener(
       "agritrack-queue-updated",
       updateDashboard
     );
-
-    return () => {
-      window.removeEventListener("storage", updateDashboard);
-
-      window.removeEventListener(
-        "agritrack-notifications-updated",
-        updateDashboard
-      );
-
-      window.removeEventListener(
-        "agritrack-queue-updated",
-        updateDashboard
-      );
-    };
-  }, []);
-
-  /*
-   * Current demo farmer is A-105.
-   *
-   * We intentionally do NOT fall back to another farmer's token.
-   * Otherwise the dashboard could incorrectly display another
-   * farmer's booking.
-   */
+  };
+}, []);
   const yourFarmer = queue.find(
-    (farmer) => farmer.token === "A-105"
+    (farmer) => farmer.token === activeToken
   );
 
-  const yourToken = yourFarmer?.token ?? "A-105";
+  const yourToken = yourFarmer?.token ?? activeToken;
 
   const servingFarmer = queue.find(
     (farmer) => farmer.status === "Serving"
@@ -98,7 +112,10 @@ export default function Dashboard() {
       ).length
     : 0;
 
-  const estimatedWait = Math.max(farmersAhead * 4, 0);
+  const estimatedWait = Math.max(
+    farmersAhead * 4,
+    0
+  );
 
   const unreadCount = notifications.filter(
     (notification) => !notification.read
@@ -144,7 +161,7 @@ export default function Dashboard() {
 
             <NavLink
               label="Procurement"
-              onClick={() => router.push("/procurement")}
+              onClick={() => router.push(`/procurement?token=${yourToken}`)}
             />
 
             <NavLink
@@ -346,7 +363,7 @@ export default function Dashboard() {
               Good morning,
               <br />
               <span className="text-[#173F2A]">
-                Ramesh.
+                {farmerName}.
               </span>
             </h1>
 
@@ -599,7 +616,7 @@ export default function Dashboard() {
 
             <button
               type="button"
-              onClick={() => router.push("/procurement")}
+              onClick={() => router.push(`/procurement?token=${yourToken}`)}
               className="hidden items-center gap-1 text-sm font-medium text-[#173F2A] sm:flex"
             >
               View details

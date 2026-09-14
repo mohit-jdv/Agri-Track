@@ -17,7 +17,8 @@ import {
   type ProcurementData,
 } from "@/lib/demo-store";
 
-const TOKEN = "A-105";
+const DEFAULT_TOKEN = "A-105";
+const ACTIVE_TOKEN_KEY = "agritrack-active-token";
 
 type PaymentStep = {
   title: string;
@@ -32,32 +33,144 @@ export default function PaymentPage() {
     useState<ProcurementData | null>(null);
 
   useEffect(() => {
-    const loadProcurement = () => {
-      setProcurement(getProcurementByToken(TOKEN));
-    };
+  const loadProcurement = () => {
+    const activeToken =
+      localStorage.getItem(ACTIVE_TOKEN_KEY) ?? DEFAULT_TOKEN;
 
+    setProcurement(getProcurementByToken(activeToken));
+  };
+
+  loadProcurement();
+
+  const handleUpdate = () => {
     loadProcurement();
+  };
 
-    const handleUpdate = () => {
-      loadProcurement();
-    };
+  window.addEventListener(
+    "agritrack-procurement-updated",
+    handleUpdate
+  );
 
-    window.addEventListener(
+  window.addEventListener(
+    "agritrack-active-token-updated",
+    handleUpdate
+  );
+
+  window.addEventListener("storage", handleUpdate);
+
+  return () => {
+    window.removeEventListener(
       "agritrack-procurement-updated",
       handleUpdate
     );
 
-    window.addEventListener("storage", handleUpdate);
+    window.removeEventListener(
+      "agritrack-active-token-updated",
+      handleUpdate
+    );
 
-    return () => {
-      window.removeEventListener(
-        "agritrack-procurement-updated",
-        handleUpdate
-      );
+    window.removeEventListener("storage", handleUpdate);
+  };
+}, []);
 
-      window.removeEventListener("storage", handleUpdate);
-    };
-  }, []);
+const assessedQuantity = Number(
+  procurement?.assessedQuantity || 0
+);
+
+const finalPrice = Number(
+  procurement?.finalPrice || 0
+);
+
+const calculatedAmount =
+  assessedQuantity * finalPrice;
+
+const paymentAmount =
+  Number(procurement?.paymentAmount || 0) ||
+  calculatedAmount;
+
+const isPaid =
+  procurement?.status === "paid";
+
+const isProcessing =
+  procurement?.status === "processing";
+
+const paymentStatusText = isPaid
+  ? "Payment received"
+  : isProcessing
+    ? "Payment processing"
+    : "Awaiting payment";
+
+const paymentStatusDescription = isPaid
+  ? "Payment has been marked as received."
+  : isProcessing
+    ? "Payment is being prepared for credit."
+    : "Payment will begin after procurement is completed.";
+
+const paymentSteps = useMemo<PaymentStep[]>(() => {
+  if (!procurement) {
+    return [];
+  }
+
+  const status = procurement.status;
+
+  const procurementCompleted = [
+    "completed",
+    "processing",
+    "paid",
+  ].includes(status);
+
+  const paymentProcessing = [
+    "processing",
+    "paid",
+  ].includes(status);
+
+  const paymentReceived = status === "paid";
+
+  return [
+    {
+      title: "Procurement completed",
+      description:
+        "Produce accepted and final quantity recorded",
+      status: procurementCompleted
+        ? "completed"
+        : "upcoming",
+    },
+    {
+      title: "Final price confirmed",
+      description: `Grade ${procurement.qualityGrade.replace(
+        "Grade ",
+        ""
+      )} · ₹${finalPrice.toLocaleString(
+        "en-IN"
+      )} per quintal`,
+      status: procurementCompleted
+        ? "completed"
+        : "upcoming",
+    },
+    {
+      title: "Payment processing",
+      description: paymentProcessing
+        ? "Payment is being prepared"
+        : "Waiting for procurement completion",
+      status: paymentProcessing
+        ? "completed"
+        : status === "completed"
+          ? "current"
+          : "upcoming",
+    },
+    {
+      title: "Payment received",
+      description: paymentReceived
+        ? "Amount has been marked as received"
+        : "Amount will be credited to your account",
+      status: paymentReceived
+        ? "completed"
+        : paymentProcessing
+          ? "current"
+          : "upcoming",
+    },
+  ];
+}, [procurement, finalPrice]);
 
   if (!procurement) {
     return (
@@ -93,99 +206,6 @@ export default function PaymentPage() {
       </main>
     );
   }
-
-  const assessedQuantity = Number(
-    procurement.assessedQuantity || 0
-  );
-
-  const finalPrice = Number(procurement.finalPrice || 0);
-
-  const calculatedAmount = assessedQuantity * finalPrice;
-
-  const paymentAmount =
-    Number(procurement.paymentAmount || 0) ||
-    calculatedAmount;
-
-  const isPaid = procurement.status === "paid";
-
-  const isProcessing =
-    procurement.status === "processing";
-
-  const paymentStatusText = isPaid
-    ? "Payment received"
-    : isProcessing
-      ? "Payment processing"
-      : "Awaiting payment";
-
-  const paymentStatusDescription = isPaid
-    ? "Payment has been marked as received."
-    : isProcessing
-      ? "Payment is being prepared for credit."
-      : "Payment will begin after procurement is completed.";
-
-  const paymentSteps = useMemo<PaymentStep[]>(() => {
-    const status = procurement.status;
-
-    const procurementCompleted = [
-      "completed",
-      "processing",
-      "paid",
-    ].includes(status);
-
-    const paymentProcessing = [
-      "processing",
-      "paid",
-    ].includes(status);
-
-    const paymentReceived = status === "paid";
-
-    return [
-      {
-        title: "Procurement completed",
-        description:
-          "Produce accepted and final quantity recorded",
-        status: procurementCompleted
-          ? "completed"
-          : "upcoming",
-      },
-      {
-        title: "Final price confirmed",
-        description: `Grade ${procurement.qualityGrade.replace(
-          "Grade ",
-          ""
-        )} · ₹${finalPrice.toLocaleString("en-IN")} per quintal`,
-        status: procurementCompleted
-          ? "completed"
-          : "upcoming",
-      },
-      {
-        title: "Payment processing",
-        description: paymentProcessing
-          ? "Payment is being prepared"
-          : "Waiting for procurement completion",
-        status: paymentProcessing
-          ? "completed"
-          : status === "completed"
-            ? "current"
-            : "upcoming",
-      },
-      {
-        title: "Payment received",
-        description: paymentReceived
-          ? "Amount has been marked as received"
-          : "Amount will be credited to your account",
-        status: paymentReceived
-          ? "completed"
-          : paymentProcessing
-            ? "current"
-            : "upcoming",
-      },
-    ];
-  }, [
-    procurement.status,
-    procurement.qualityGrade,
-    finalPrice,
-  ]);
 
   return (
     <main className="min-h-screen bg-[#F4F0E6] text-[#172019]">

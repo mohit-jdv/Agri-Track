@@ -12,96 +12,294 @@ import {
   Weight,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
-import {
-  Farmer,
-  addNotification,
-  getQueue,
-  resetQueue,
-  saveQueue,
-  getProcurementByToken,
-saveProcurementByToken,
-} from "@/lib/demo-store";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 const ACTIVE_TOKEN_KEY = "agritrack-active-token";
+
+type QueueStatus =
+  | "Waiting"
+  | "Arrived"
+  | "Serving"
+  | "Completed"
+  | "Cancelled";
+
+type ProcurementStatus =
+  | "booking"
+  | "arrived"
+  | "weighing"
+  | "quality"
+  | "completed"
+  | "processing"
+  | "paid";
+
+type Farmer = {
+  token: string;
+  name: string;
+  crop: string;
+  quantity: string;
+  slot: string;
+  status: QueueStatus;
+};
+
+type QueueEntry = {
+  id: string;
+  booking_id: string;
+  farmer_id: string;
+  token: string;
+  centre_name: string;
+  queue_position: number | null;
+  status: QueueStatus;
+  estimated_wait_minutes: number | null;
+  created_at: string;
+};
 
 export default function CentreDashboard() {
   const router = useRouter();
 
+  const loadQueueVersion = useRef(0);
   const [farmers, setFarmers] = useState<Farmer[]>([]);
-  const [selectedToken, setSelectedToken] = useState("A-105");
-  const [procurementStatus, setProcurementStatus] = useState(
-  getProcurementByToken("A-105").status
-);
+  const [selectedToken, setSelectedToken] = useState<string | null>(null);
+  const [procurementStatus, setProcurementStatus] =
+    useState<ProcurementStatus | null>(null);
 
-  useEffect(() => {
-  const queue = getQueue();
+  async function loadProcurementStatus(token: string) {
+    const { data, error } = await supabase
+      .from("procurements")
+      .select("status")
+      .eq("token", token)
+      .maybeSingle();
 
-  setFarmers(queue);
+    if (error) {
+      console.error("Procurement load error:", error);
+      setProcurementStatus(null);
+      return;
+    }
 
-  const serving = queue.find(
-    (farmer) => farmer.status === "Serving"
-  );
-
-  if (serving) {
-    localStorage.setItem(ACTIVE_TOKEN_KEY, serving.token);
-    setSelectedToken(serving.token);
     setProcurementStatus(
-      getProcurementByToken(serving.token).status
+      (data?.status as ProcurementStatus | null) ?? null
     );
   }
 
-  const updateQueue = () => {
-    const updatedQueue = getQueue();
+  async function loadQueue() {
+  const currentVersion = ++loadQueueVersion.current;
 
-    setFarmers(updatedQueue);
+  const { data: queueData, error: queueError } = await supabase
+    .from("queue_entries")
+    .select("*")
+    .order("created_at", { ascending: true });
 
-    const servingFarmer = updatedQueue.find(
-      (farmer) => farmer.status === "Serving"
+  if (currentVersion !== loadQueueVersion.current) {
+    return;
+  }
+
+  if (queueError) {
+    console.error("Queue load error:", queueError);
+    return;
+  }
+
+  if (!queueData || queueData.length === 0) {
+    setFarmers([]);
+    setSelectedToken(null);
+    setProcurementStatus(null);
+    return;
+  }
+
+  const typedQueue = queueData as QueueEntry[];
+
+  const bookingIds = typedQueue.map(
+    (entry) => entry.booking_id
+  );
+
+  const { data: bookingData, error: bookingError } =
+    await supabase
+      .from("bookings")
+      .select("id, crop, quantity, slot")
+      .in("id", bookingIds);
+
+  if (currentVersion !== loadQueueVersion.current) {
+    return;
+  }
+
+  if (bookingError) {
+    console.error(
+      "Booking load error:",
+      bookingError
+    );
+  }
+
+  const farmerIds = typedQueue.map(
+    (entry) => entry.farmer_id
+  );
+
+  const { data: profileData, error: profileError } =
+    await supabase
+      .from("profiles")
+      .select("id, name")
+      .in("id", farmerIds);
+
+  if (currentVersion !== loadQueueVersion.current) {
+    return;
+  }
+
+  if (profileError) {
+    console.error(
+      "Profile load error:",
+      profileError
+    );
+  }
+
+  const updatedFarmers: Farmer[] = typedQueue.map(
+    (entry) => {
+      const booking = bookingData?.find(
+        (item) => item.id === entry.booking_id
+      );
+
+      const profile = profileData?.find(
+        (item) => item.id === entry.farmer_id
+      );
+
+      return {
+        token: entry.token,
+        name: profile?.name ?? "Farmer",
+        crop: booking?.crop ?? "—",
+        quantity:
+          booking?.quantity !== null &&
+          booking?.quantity !== undefined
+            ? `${booking.quantity} q`
+            : "—",
+        slot: booking?.slot ?? "—",
+        status: entry.status,
+      };
+    }
+  );
+
+  if (currentVersion !== loadQueueVersion.current) {
+    return;
+  }
+
+  setFarmers(updatedFarmers);
+
+  const servingFarmer = updatedFarmers.find(
+    (farmer) => farmer.status === "Serving"
+  );
+
+  if (servingFarmer) {
+    localStorage.setItem(
+      ACTIVE_TOKEN_KEY,
+      servingFarmer.token
     );
 
-    if (servingFarmer) {
-      localStorage.setItem(
-        ACTIVE_TOKEN_KEY,
-        servingFarmer.token
-      );
+    setSelectedToken(servingFarmer.token);
 
-      setSelectedToken(servingFarmer.token);
+    await loadProcurementStatus(
+      servingFarmer.token
+    );
 
-      setProcurementStatus(
-        getProcurementByToken(servingFarmer.token).status
-      );
-    }
-  };
+    return;
+  }
 
-  window.addEventListener("storage", updateQueue);
-  window.addEventListener("agritrack-queue-updated", updateQueue);
+  const savedToken = localStorage.getItem(
+    ACTIVE_TOKEN_KEY
+  );
 
-  return () => {
-    window.removeEventListener("storage", updateQueue);
-    window.removeEventListener(
+  const savedFarmer = savedToken
+    ? updatedFarmers.find(
+        (farmer) => farmer.token === savedToken
+      )
+    : null;
+
+  if (savedFarmer) {
+    setSelectedToken(savedFarmer.token);
+
+    await loadProcurementStatus(
+      savedFarmer.token
+    );
+
+    return;
+  }
+
+  setSelectedToken(
+    updatedFarmers[0]?.token ?? null
+  );
+
+  if (updatedFarmers[0]?.token) {
+    await loadProcurementStatus(
+      updatedFarmers[0].token
+    );
+  }
+}
+
+  useEffect(() => {
+    const initialize = () => {
+      void loadQueue();
+    };
+
+    const updateQueue = () => {
+      void loadQueue();
+    };
+
+    const updateProcurement = () => {
+      const token = localStorage.getItem(ACTIVE_TOKEN_KEY);
+
+      if (token) {
+        void loadProcurementStatus(token);
+      }
+    };
+
+    const timer = window.setTimeout(initialize, 0);
+
+    window.addEventListener(
+      "agritrack-active-token-updated",
+      updateQueue
+    );
+
+    window.addEventListener(
       "agritrack-queue-updated",
       updateQueue
     );
-  };
-}, []);
 
-  // Always calculate the currently serving farmer from the actual queue.
+    window.addEventListener(
+      "agritrack-procurement-updated",
+      updateProcurement
+    );
+
+    return () => {
+      window.clearTimeout(timer);
+
+      window.removeEventListener(
+        "agritrack-active-token-updated",
+        updateQueue
+      );
+
+      window.removeEventListener(
+        "agritrack-queue-updated",
+        updateQueue
+      );
+
+      window.removeEventListener(
+        "agritrack-procurement-updated",
+        updateProcurement
+      );
+    };
+  }, []);
+
   const servingFarmer = useMemo(
-    () => farmers.find((farmer) => farmer.status === "Serving"),
+    () =>
+      farmers.find(
+        (farmer) => farmer.status === "Serving"
+      ),
     [farmers]
   );
 
   const selectedFarmer = useMemo(
-  () =>
-    farmers.find((farmer) => farmer.status === "Serving") ??
-    farmers.find((farmer) => farmer.token === selectedToken),
-  [farmers, selectedToken]
-);
-
-const activeProcurementStatus = selectedFarmer
-  ? getProcurementByToken(selectedFarmer.token).status
-  : procurementStatus;
+    () =>
+      servingFarmer ??
+      farmers.find(
+        (farmer) => farmer.token === selectedToken
+      ),
+    [farmers, selectedToken, servingFarmer]
+  );
 
   const waitingCount = farmers.filter(
     (farmer) => farmer.status === "Waiting"
@@ -115,287 +313,394 @@ const activeProcurementStatus = selectedFarmer
     (farmer) => farmer.status === "Completed"
   ).length;
 
- 
-function serveNext() {
-  setFarmers((currentFarmers) => {
-    const currentServingIndex = currentFarmers.findIndex(
+  async function serveNext() {
+    const currentServing = farmers.find(
       (farmer) => farmer.status === "Serving"
     );
 
-    const nextIndex = currentFarmers.findIndex(
-      (farmer, index) =>
-        index > currentServingIndex &&
-        (farmer.status === "Waiting" || farmer.status === "Arrived")
-    );
+    // FIX: an "Arrived" farmer must always be served before a "Waiting" one —
+    // "Waiting" means the farmer hasn't physically checked in yet. The old
+    // code did `farmer.status === "Arrived" || farmer.status === "Waiting"`,
+    // which returns whichever of the two appears first in queue order
+    // (i.e. sorted by created_at), so a farmer who hasn't arrived could get
+    // served ahead of one who has. We now look for an Arrived farmer first
+    // and only fall back to Waiting if nobody has checked in yet.
+    const nextFarmer =
+      farmers.find((farmer) => farmer.status === "Arrived") ??
+      farmers.find((farmer) => farmer.status === "Waiting");
 
-    if (nextIndex === -1) {
-      return currentFarmers;
+    if (!nextFarmer) {
+      return;
     }
 
-    const nextFarmer = currentFarmers[nextIndex];
-    const nextToken = nextFarmer.token;
+    if (currentServing) {
+      const { error } = await supabase
+        .from("queue_entries")
+        .update({
+          status: "Completed",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("token", currentServing.token);
 
-    const updatedFarmers = currentFarmers.map((farmer) => {
-      if (farmer.status === "Serving") {
-        return {
-          ...farmer,
-          status: "Completed" as const,
-        };
+      if (error) {
+        console.error(
+          "Complete current farmer error:",
+          error
+        );
+        return;
       }
+    }
 
-      if (farmer.token === nextToken) {
-        return {
-          ...farmer,
-          status: "Serving" as const,
-        };
-      }
+    const { error: serveError } = await supabase
+      .from("queue_entries")
+      .update({
+        status: "Serving",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("token", nextFarmer.token);
 
-      return farmer;
-    });
-
-    localStorage.setItem(ACTIVE_TOKEN_KEY, nextToken);
-
-    window.dispatchEvent(
-      new Event("agritrack-active-token-updated")
-    );
-
-    setSelectedToken(nextToken);
-
-    const nextProcurement = getProcurementByToken(nextToken);
-
-    setProcurementStatus(nextProcurement.status);
-
-    saveQueue(updatedFarmers);
-
-    addNotification({
-      type: "queue",
-      title: "It's your turn",
-      message: `Token ${nextToken} is now being served. Please proceed to the procurement desk.`,
-    });
-
-    return updatedFarmers;
-  });
-}
-
-
-  function markArrived(token: string) {
-  setFarmers((current) => {
-    const updated = current.map((farmer) =>
-      farmer.token === token
-        ? { ...farmer, status: "Arrived" as const }
-        : farmer
-    );
-
-    saveQueue(updated);
-
-    return updated;
-  });
-}
-
-  function serveFarmer(token: string) {
-  setFarmers((currentFarmers) => {
-    const updatedQueue = currentFarmers.map((farmer) => {
-      if (farmer.token === token) {
-        return {
-          ...farmer,
-          status: "Serving" as const,
-        };
-      }
-
-      if (farmer.status === "Serving") {
-        return {
-          ...farmer,
-          status: "Completed" as const,
-        };
-      }
-
-      return farmer;
-    });
-
-    localStorage.setItem(ACTIVE_TOKEN_KEY, token);
-
-    window.dispatchEvent(
-      new Event("agritrack-active-token-updated")
-    );
-
-    setSelectedToken(token);
-
-    const procurement = getProcurementByToken(token);
-
-    setProcurementStatus(procurement.status);
-
-    saveQueue(updatedQueue);
-
-    return updatedQueue;
-  });
-}
-
-  function skipFarmer(token: string) {
-  setFarmers((current) => {
-    const updated = current.map((farmer) =>
-      farmer.token === token
-        ? { ...farmer, status: "Waiting" as const }
-        : farmer
-    );
-
-    saveQueue(updated);
-
-    return updated;
-  });
-}
-
-function updateProcurementStatus(
-  status:
-    | "booking"
-    | "arrived"
-    | "weighing"
-    | "quality"
-    | "completed"
-    | "processing"
-    | "paid"
-) {
-  const serving = farmers.find(
-    (farmer) => farmer.status === "Serving"
-  );
-
-  if (!serving) {
-    return;
-  }
-
-  const current = getProcurementByToken(serving.token);
-
-  const updated = {
-    ...current,
-    token: serving.token,
-    status,
-  };
-
-  saveProcurementByToken(updated);
-  setProcurementStatus(status);
-
-  const messages = {
-    arrived: "Farmer has arrived at the procurement centre.",
-    weighing: "Weighing has started for your procurement.",
-    quality: "Quality assessment is now in progress.",
-    completed: "Procurement has been completed successfully.",
-    processing: "Your payment is now being processed.",
-    paid: "Payment has been received successfully.",
-    booking: "Your procurement booking is confirmed.",
-  };
-
-  addNotification({
-    type:
-      status === "paid" || status === "processing"
-        ? "payment"
-        : "procurement",
-    title:
-      status === "paid"
-        ? "Payment received"
-        : status === "processing"
-          ? "Payment processing"
-          : "Procurement update",
-    message: `Token ${serving.token}: ${messages[status]}`,
-  });
-
-  if (status !== "paid") {
-    return;
-  }
-
-  setTimeout(() => {
-    setFarmers((currentFarmers) => {
-      const currentServingIndex = currentFarmers.findIndex(
-        (farmer) => farmer.status === "Serving"
+    if (serveError) {
+      console.error(
+        "Serve next farmer error:",
+        serveError
       );
+      return;
+    }
 
-      if (currentServingIndex === -1) {
-        return currentFarmers;
-      }
+    localStorage.setItem(
+      ACTIVE_TOKEN_KEY,
+      nextFarmer.token
+    );
 
-      const currentServingFarmer =
-        currentFarmers[currentServingIndex];
+    setSelectedToken(nextFarmer.token);
 
-      const completedQueue = currentFarmers.map((farmer) => {
-        if (farmer.token === currentServingFarmer.token) {
+    setFarmers((currentFarmers) =>
+      currentFarmers.map((farmer) => {
+        if (farmer.token === currentServing?.token) {
           return {
             ...farmer,
-            status: "Completed" as const,
+            status: "Completed",
           };
         }
 
-        return farmer;
-      });
-
-      const nextFarmer = completedQueue.find(
-        (farmer, index) =>
-          index > currentServingIndex &&
-          (farmer.status === "Arrived" ||
-            farmer.status === "Waiting")
-      );
-
-      if (!nextFarmer) {
-        saveQueue(completedQueue);
-        return completedQueue;
-      }
-
-      const updatedQueue = completedQueue.map((farmer) => {
         if (farmer.token === nextFarmer.token) {
           return {
             ...farmer,
-            status: "Serving" as const,
+            status: "Serving",
           };
         }
 
         return farmer;
-      });
+      })
+    );
 
-      saveQueue(updatedQueue);
-      setSelectedToken(nextFarmer.token);
+    await loadProcurementStatus(nextFarmer.token);
 
-      const nextProcurement = getProcurementByToken(
-        nextFarmer.token
-      );
+    window.dispatchEvent(
+      new Event("agritrack-active-token-updated")
+    );
 
-      saveProcurementByToken({
-        ...nextProcurement,
-        token: nextFarmer.token,
-        status: "arrived",
-      });
+    window.dispatchEvent(
+      new Event("agritrack-queue-updated")
+    );
+  }
 
-      setProcurementStatus("arrived");
+  async function markArrived(token: string) {
+    const { error } = await supabase
+      .from("queue_entries")
+      .update({
+        status: "Arrived",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("token", token);
 
-      addNotification({
-        type: "queue",
-        title: "Your turn",
-        message: `Token ${nextFarmer.token} is now being served. Please proceed to the procurement desk.`,
-      });
+    if (error) {
+      console.error("Mark arrived error:", error);
+      return;
+    }
 
-      return updatedQueue;
-    });
-  }, 1000);
-}
+    setFarmers((current) =>
+      current.map((farmer) =>
+        farmer.token === token
+          ? {
+              ...farmer,
+              status: "Arrived",
+            }
+          : farmer
+      )
+    );
 
-  function resetDemo() {
-  resetQueue();
+    window.dispatchEvent(
+      new Event("agritrack-queue-updated")
+    );
+  }
 
-  const resetProcurementData = getProcurementByToken("A-105");
+  async function serveFarmer(token: string) {
+    const currentServing = farmers.find(
+      (farmer) => farmer.status === "Serving"
+    );
 
-  saveProcurementByToken({
-    ...resetProcurementData,
-    token: "A-105",
-    status: "arrived",
-  });
+    if (currentServing && currentServing.token !== token) {
+      const { error: completeError } = await supabase
+        .from("queue_entries")
+        .update({
+          status: "Completed",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("token", currentServing.token);
 
-  setFarmers(getQueue());
-  setSelectedToken("A-105");
+      if (completeError) {
+        console.error(
+          "Complete current farmer error:",
+          completeError
+        );
+        return;
+      }
+    }
 
-  localStorage.setItem(ACTIVE_TOKEN_KEY, "A-105");
+    const { error } = await supabase
+      .from("queue_entries")
+      .update({
+        status: "Serving",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("token", token);
 
-  window.dispatchEvent(
-    new Event("agritrack-active-token-updated")
+    if (error) {
+      console.error("Serve farmer error:", error);
+      return;
+    }
+
+    localStorage.setItem(ACTIVE_TOKEN_KEY, token);
+
+    setSelectedToken(token);
+
+    setFarmers((currentFarmers) =>
+      currentFarmers.map((farmer) => {
+        if (farmer.token === token) {
+          return {
+            ...farmer,
+            status: "Serving",
+          };
+        }
+
+        if (farmer.status === "Serving") {
+          return {
+            ...farmer,
+            status: "Completed",
+          };
+        }
+
+        return farmer;
+      })
+    );
+
+    await loadProcurementStatus(token);
+
+    window.dispatchEvent(
+      new Event("agritrack-active-token-updated")
+    );
+
+    window.dispatchEvent(
+      new Event("agritrack-queue-updated")
+    );
+  }
+
+  async function skipFarmer(token: string) {
+    const { error } = await supabase
+      .from("queue_entries")
+      .update({
+        status: "Cancelled",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("token", token);
+
+    if (error) {
+      console.error("Skip farmer error:", error);
+      return;
+    }
+
+    setFarmers((currentFarmers) =>
+      currentFarmers.map((farmer) =>
+        farmer.token === token
+          ? {
+              ...farmer,
+              status: "Cancelled",
+            }
+          : farmer
+      )
+    );
+
+    window.dispatchEvent(
+      new Event("agritrack-queue-updated")
+    );
+  }
+
+    async function updateProcurementStatus(
+  status: ProcurementStatus
+) {
+  // Use the farmer currently shown in the procurement desk.
+  const serving = selectedFarmer;
+
+  if (!serving || serving.status !== "Serving") {
+    console.error("No serving farmer selected.");
+    return;
+  }
+
+  const updateData: {
+    status: ProcurementStatus;
+    updated_at: string;
+    payment_status?: "Pending" | "Processing" | "Received";
+  } = {
+    status,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (status === "processing") {
+    updateData.payment_status = "Processing";
+  }
+
+  if (status === "paid") {
+    updateData.payment_status = "Received";
+  }
+
+  console.log(
+    "Updating procurement:",
+    serving.token,
+    updateData
   );
 
-  setProcurementStatus("arrived");
+  const { data: procurementData, error: procurementError } =
+    await supabase
+      .from("procurements")
+      .update(updateData)
+      .eq("token", serving.token)
+      .select("token, status, payment_status")
+      .maybeSingle();
+
+  if (procurementError) {
+    console.error(
+      "Procurement update error:",
+      procurementError
+    );
+    alert(
+      `Could not update procurement: ${procurementError.message}`
+    );
+    return;
+  }
+
+  if (!procurementData) {
+    console.error(
+      "No procurement row found for token:",
+      serving.token
+    );
+    alert(
+      `No procurement record found for ${serving.token}.`
+    );
+    return;
+  }
+
+  console.log(
+    "Procurement updated successfully:",
+    procurementData
+  );
+
+  // Payment received = procurement finished + farmer leaves queue.
+  if (status === "paid") {
+    const { error: queueError } = await supabase
+      .from("queue_entries")
+      .update({
+        status: "Completed",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("token", serving.token)
+      .eq("status", "Serving");
+
+    if (queueError) {
+      console.error(
+        "Queue completion error:",
+        queueError
+      );
+      alert(
+        `Payment updated, but queue completion failed: ${queueError.message}`
+      );
+      return;
+    }
+
+    setFarmers((currentFarmers) =>
+      currentFarmers.map((farmer) =>
+        farmer.token === serving.token
+          ? {
+              ...farmer,
+              status: "Completed",
+            }
+          : farmer
+      )
+    );
+
+    setProcurementStatus("paid");
+    setSelectedToken(null);
+
+    localStorage.removeItem(ACTIVE_TOKEN_KEY);
+
+    return;
+  }
+
+  // Update the procurement stage immediately on screen.
+  setProcurementStatus(status);
+
+  // Tell the procurement UI to refresh.
+  window.dispatchEvent(
+    new Event("agritrack-procurement-updated")
+  );
 }
+
+  async function resetDemo() {
+    const { error } = await supabase
+      .from("queue_entries")
+      .update({
+        status: "Waiting",
+        updated_at: new Date().toISOString(),
+      })
+      .neq("status", "Waiting");
+
+    if (error) {
+      console.error("Reset queue error:", error);
+      return;
+    }
+
+    const { error: procurementError } = await supabase
+      .from("procurements")
+      .update({
+        status: "booking",
+        payment_status: "Pending",
+        updated_at: new Date().toISOString(),
+      })
+      .neq("status", "booking");
+
+    if (procurementError) {
+      console.error(
+        "Reset procurement error:",
+        procurementError
+      );
+      return;
+    }
+
+    localStorage.removeItem(ACTIVE_TOKEN_KEY);
+
+    setSelectedToken(null);
+    setProcurementStatus(null);
+
+    await loadQueue();
+
+    window.dispatchEvent(
+      new Event("agritrack-active-token-updated")
+    );
+
+    window.dispatchEvent(
+      new Event("agritrack-queue-updated")
+    );
+  }
 
   return (
     <main className="min-h-screen bg-[#F4F0E6] text-[#172019]">
@@ -411,6 +716,7 @@ function updateProcurementStatus(
               <div className="text-lg font-semibold tracking-[-0.04em]">
                 AgriTrack
               </div>
+
               <div className="text-[10px] uppercase tracking-[0.16em] text-[#172019]/40">
                 Procurement Centre
               </div>
@@ -423,7 +729,9 @@ function updateProcurementStatus(
             </button>
 
             <button
-              onClick={() => router.push("/centre/dashboard")}
+              onClick={() =>
+                router.push("/centre/dashboard")
+              }
               className="text-sm text-[#172019]/50 transition hover:text-[#173F2A]"
             >
               Queue
@@ -472,8 +780,8 @@ function updateProcurementStatus(
             </h1>
 
             <p className="mt-4 max-w-xl text-base leading-7 text-[#172019]/55">
-              Manage today&apos;s farmer queue, procurement and payment
-              progress from one place.
+              Manage today&apos;s farmer queue, procurement and
+              payment progress from one place.
             </p>
           </div>
 
@@ -492,8 +800,9 @@ function updateProcurementStatus(
             <p className="text-xs uppercase tracking-[0.14em] text-[#172019]/40">
               Booked today
             </p>
+
             <p className="mt-3 text-3xl font-semibold tracking-[-0.05em]">
-              18
+              {farmers.length}
             </p>
           </div>
 
@@ -501,6 +810,7 @@ function updateProcurementStatus(
             <p className="text-xs uppercase tracking-[0.14em] text-[#172019]/40">
               Waiting
             </p>
+
             <p className="mt-3 text-3xl font-semibold tracking-[-0.05em]">
               {waitingCount}
             </p>
@@ -510,6 +820,7 @@ function updateProcurementStatus(
             <p className="text-xs uppercase tracking-[0.14em] text-[#172019]/40">
               Arrived
             </p>
+
             <p className="mt-3 text-3xl font-semibold tracking-[-0.05em]">
               {arrivedCount}
             </p>
@@ -519,6 +830,7 @@ function updateProcurementStatus(
             <p className="text-xs uppercase tracking-[0.14em] text-[#172019]/40">
               Completed
             </p>
+
             <p className="mt-3 text-3xl font-semibold tracking-[-0.05em]">
               {completedCount}
             </p>
@@ -539,7 +851,8 @@ function updateProcurementStatus(
                 </p>
 
                 <p className="mt-3 text-lg text-[#F4F0E6]/70">
-                  {servingFarmer?.name ?? "No farmer currently being served"}
+                  {servingFarmer?.name ??
+                    "No farmer currently being served"}
                 </p>
               </div>
 
@@ -551,18 +864,33 @@ function updateProcurementStatus(
             {servingFarmer && (
               <div className="mt-8 grid grid-cols-2 gap-3 border-t border-[#F4F0E6]/10 pt-6 md:grid-cols-3">
                 <div>
-                  <p className="text-xs text-[#F4F0E6]/40">Crop</p>
-                  <p className="mt-1 text-sm">{servingFarmer.crop}</p>
+                  <p className="text-xs text-[#F4F0E6]/40">
+                    Crop
+                  </p>
+
+                  <p className="mt-1 text-sm">
+                    {servingFarmer.crop}
+                  </p>
                 </div>
 
                 <div>
-                  <p className="text-xs text-[#F4F0E6]/40">Quantity</p>
-                  <p className="mt-1 text-sm">{servingFarmer.quantity}</p>
+                  <p className="text-xs text-[#F4F0E6]/40">
+                    Quantity
+                  </p>
+
+                  <p className="mt-1 text-sm">
+                    {servingFarmer.quantity}
+                  </p>
                 </div>
 
                 <div>
-                  <p className="text-xs text-[#F4F0E6]/40">Slot</p>
-                  <p className="mt-1 text-sm">{servingFarmer.slot}</p>
+                  <p className="text-xs text-[#F4F0E6]/40">
+                    Slot
+                  </p>
+
+                  <p className="mt-1 text-sm">
+                    {servingFarmer.slot}
+                  </p>
                 </div>
               </div>
             )}
@@ -571,7 +899,10 @@ function updateProcurementStatus(
               onClick={serveNext}
               className="mt-8 flex w-full items-center justify-between rounded-[12px] bg-[#F4F0E6] px-5 py-4 text-left text-[#173F2A] transition hover:bg-white"
             >
-              <span className="font-medium">Serve next farmer</span>
+              <span className="font-medium">
+                Serve next farmer
+              </span>
+
               <ChevronRight size={19} />
             </button>
           </div>
@@ -590,7 +921,10 @@ function updateProcurementStatus(
                   </div>
 
                   <div>
-                    <p className="font-semibold">{selectedFarmer.name}</p>
+                    <p className="font-semibold">
+                      {selectedFarmer.name}
+                    </p>
+
                     <p className="text-sm text-[#172019]/45">
                       Token {selectedFarmer.token}
                     </p>
@@ -599,86 +933,137 @@ function updateProcurementStatus(
 
                 <div className="mt-7 space-y-4 border-t border-[#173F2A]/10 pt-5">
                   <div className="flex justify-between text-sm">
-                    <span className="text-[#172019]/45">Crop</span>
+                    <span className="text-[#172019]/45">
+                      Crop
+                    </span>
+
                     <span>{selectedFarmer.crop}</span>
                   </div>
 
                   <div className="flex justify-between text-sm">
-                    <span className="text-[#172019]/45">Quantity</span>
-                    <span>{selectedFarmer.quantity}</span>
+                    <span className="text-[#172019]/45">
+                      Quantity
+                    </span>
+
+                    <span>
+                      {selectedFarmer.quantity}
+                    </span>
                   </div>
 
                   <div className="flex justify-between text-sm">
-                    <span className="text-[#172019]/45">Status</span>
+                    <span className="text-[#172019]/45">
+                      Queue status
+                    </span>
+
                     <span>{selectedFarmer.status}</span>
+                  </div>
+
+                  <div className="flex justify-between text-sm">
+                    <span className="text-[#172019]/45">
+                      Procurement
+                    </span>
+
+                    <span className="capitalize">
+                      {procurementStatus ?? "—"}
+                    </span>
                   </div>
                 </div>
 
                 <div className="mt-7 space-y-2">
-  <button
-    onClick={() =>
-      router.push(`/procurement?token=${selectedFarmer.token}`)
-    }
-    className="flex w-full items-center justify-between rounded-[12px] bg-[#173F2A] px-5 py-4 text-sm font-medium text-[#F4F0E6] transition hover:bg-[#204D34]"
-  >
-    Open procurement
-    <ChevronRight size={17} />
-  </button>
+                  <button
+                    onClick={() =>
+                      router.push(
+                        `/procurement?token=${selectedFarmer.token}`
+                      )
+                    }
+                    className="flex w-full items-center justify-between rounded-[12px] bg-[#173F2A] px-5 py-4 text-sm font-medium text-[#F4F0E6] transition hover:bg-[#204D34]"
+                  >
+                    Open procurement
+                    <ChevronRight size={17} />
+                  </button>
 
-  {selectedFarmer.status === "Serving" && (
-    <>
-      {procurementStatus === "arrived" && (
-        <button
-          onClick={() => updateProcurementStatus("weighing")}
-          className="flex w-full items-center justify-between rounded-[12px] border border-[#173F2A]/15 bg-white/30 px-5 py-4 text-sm transition hover:bg-white/60"
-        >
-          Start weighing
-          <Weight size={17} />
-        </button>
-      )}
+                  {selectedFarmer.status === "Serving" && (
+                    <>
+                      {/*
+                        FIX: this used to render unconditionally whenever the
+                        farmer was "Serving", so "Start weighing" stayed
+                        visible even after the procurement had already moved
+                        on to quality/completed/processing/paid — showing
+                        multiple stage buttons at once. It now only shows
+                        while the procurement hasn't started weighing yet.
+                      */}
+                      {(procurementStatus === null ||
+                        procurementStatus === "booking" ||
+                        procurementStatus === "arrived") && (
+                        <button
+                          onClick={() =>
+                            updateProcurementStatus(
+                              "weighing"
+                            )
+                          }
+                          className="flex w-full items-center justify-between rounded-[12px] border border-[#173F2A]/15 bg-white/30 px-5 py-4 text-sm transition hover:bg-white/60"
+                        >
+                          Start weighing
+                          <Weight size={17} />
+                        </button>
+                      )}
 
-      {procurementStatus === "weighing" && (
-        <button
-          onClick={() => updateProcurementStatus("quality")}
-          className="flex w-full items-center justify-between rounded-[12px] border border-[#173F2A]/15 bg-white/30 px-5 py-4 text-sm transition hover:bg-white/60"
-        >
-          Complete weighing → Quality check
-          <ChevronRight size={17} />
-        </button>
-      )}
+                      {procurementStatus === "weighing" && (
+                        <button
+                          onClick={() =>
+                            updateProcurementStatus(
+                              "quality"
+                            )
+                          }
+                          className="flex w-full items-center justify-between rounded-[12px] border border-[#173F2A]/15 bg-white/30 px-5 py-4 text-sm transition hover:bg-white/60"
+                        >
+                          Complete weighing → Quality check
+                          <ChevronRight size={17} />
+                        </button>
+                      )}
 
-      {procurementStatus === "quality" && (
-        <button
-          onClick={() => updateProcurementStatus("completed")}
-          className="flex w-full items-center justify-between rounded-[12px] border border-[#173F2A]/15 bg-white/30 px-5 py-4 text-sm transition hover:bg-white/60"
-        >
-          Complete procurement
-          <Check size={17} />
-        </button>
-      )}
+                      {procurementStatus === "quality" && (
+                        <button
+                          onClick={() =>
+                            updateProcurementStatus(
+                              "completed"
+                            )
+                          }
+                          className="flex w-full items-center justify-between rounded-[12px] border border-[#173F2A]/15 bg-white/30 px-5 py-4 text-sm transition hover:bg-white/60"
+                        >
+                          Complete procurement
+                          <Check size={17} />
+                        </button>
+                      )}
 
-      {procurementStatus === "completed" && (
-        <button
-          onClick={() => updateProcurementStatus("processing")}
-          className="flex w-full items-center justify-between rounded-[12px] border border-[#173F2A]/15 bg-white/30 px-5 py-4 text-sm transition hover:bg-white/60"
-        >
-          Start payment
-          <ChevronRight size={17} />
-        </button>
-      )}
+                      {procurementStatus === "completed" && (
+                        <button
+                          onClick={() =>
+                            updateProcurementStatus(
+                              "processing"
+                            )
+                          }
+                          className="flex w-full items-center justify-between rounded-[12px] border border-[#173F2A]/15 bg-white/30 px-5 py-4 text-sm transition hover:bg-white/60"
+                        >
+                          Start payment
+                          <ChevronRight size={17} />
+                        </button>
+                      )}
 
-      {procurementStatus === "processing" && (
-        <button
-          onClick={() => updateProcurementStatus("paid")}
-          className="flex w-full items-center justify-between rounded-[12px] border border-[#173F2A]/15 bg-white/30 px-5 py-4 text-sm transition hover:bg-white/60"
-        >
-          Mark payment received
-          <Check size={17} />
-        </button>
-      )}
-    </>
-  )}
-</div>
+                      {procurementStatus === "processing" && (
+                        <button
+                          onClick={() =>
+                            updateProcurementStatus("paid")
+                          }
+                          className="flex w-full items-center justify-between rounded-[12px] border border-[#173F2A]/15 bg-white/30 px-5 py-4 text-sm transition hover:bg-white/60"
+                        >
+                          Mark payment received
+                          <Check size={17} />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </>
             ) : (
               <p className="mt-6 text-sm text-[#172019]/50">
@@ -710,11 +1095,26 @@ function updateProcurementStatus(
             <table className="w-full min-w-[760px] text-left">
               <thead>
                 <tr className="border-b border-[#173F2A]/10 text-xs uppercase tracking-[0.13em] text-[#172019]/40">
-                  <th className="px-4 py-4 font-medium">Token</th>
-                  <th className="px-4 py-4 font-medium">Farmer</th>
-                  <th className="px-4 py-4 font-medium">Crop</th>
-                  <th className="px-4 py-4 font-medium">Quantity</th>
-                  <th className="px-4 py-4 font-medium">Status</th>
+                  <th className="px-4 py-4 font-medium">
+                    Token
+                  </th>
+
+                  <th className="px-4 py-4 font-medium">
+                    Farmer
+                  </th>
+
+                  <th className="px-4 py-4 font-medium">
+                    Crop
+                  </th>
+
+                  <th className="px-4 py-4 font-medium">
+                    Quantity
+                  </th>
+
+                  <th className="px-4 py-4 font-medium">
+                    Status
+                  </th>
+
                   <th className="px-4 py-4 font-medium text-right">
                     Action
                   </th>
@@ -726,16 +1126,15 @@ function updateProcurementStatus(
                   <tr
                     key={farmer.token}
                     onClick={() => {
-  setSelectedToken(farmer.token);
-
-  const procurement = getProcurementByToken(
-    farmer.token
-  );
-
-  setProcurementStatus(procurement.status);
-}}
+                      setSelectedToken(farmer.token);
+                      void loadProcurementStatus(
+                        farmer.token
+                      );
+                    }}
                     className={`cursor-pointer border-b border-[#173F2A]/8 transition hover:bg-white/40 ${
-                      selectedToken === farmer.token ? "bg-white/50" : ""
+                      selectedToken === farmer.token
+                        ? "bg-white/50"
+                        : ""
                     }`}
                   >
                     <td className="px-4 py-5 font-semibold">
@@ -784,7 +1183,9 @@ function updateProcurementStatus(
                           <button
                             onClick={(event) => {
                               event.stopPropagation();
-                              markArrived(farmer.token);
+                              void markArrived(
+                                farmer.token
+                              );
                             }}
                             className="rounded-[10px] border border-[#173F2A]/15 px-3 py-2 text-xs font-medium hover:bg-white"
                           >
@@ -796,7 +1197,9 @@ function updateProcurementStatus(
                           <button
                             onClick={(event) => {
                               event.stopPropagation();
-                              serveFarmer(farmer.token);
+                              void serveFarmer(
+                                farmer.token
+                              );
                             }}
                             className="rounded-[10px] bg-[#173F2A] px-3 py-2 text-xs font-medium text-[#F4F0E6] hover:bg-[#204D34]"
                           >
@@ -809,7 +1212,9 @@ function updateProcurementStatus(
                           <button
                             onClick={(event) => {
                               event.stopPropagation();
-                              skipFarmer(farmer.token);
+                              void skipFarmer(
+                                farmer.token
+                              );
                             }}
                             className="flex h-8 w-8 items-center justify-center rounded-[9px] border border-[#173F2A]/10 hover:bg-white"
                             title="Skip"
@@ -820,7 +1225,9 @@ function updateProcurementStatus(
 
                         {farmer.status === "Serving" && (
                           <button
-                            onClick={(event) => event.stopPropagation()}
+                            onClick={(event) =>
+                              event.stopPropagation()
+                            }
                             className="flex h-8 w-8 items-center justify-center rounded-[9px] border border-[#173F2A]/10 hover:bg-white"
                             title="More"
                           >
@@ -844,10 +1251,13 @@ function updateProcurementStatus(
             </div>
 
             <div>
-              <p className="font-medium">Queue is moving normally</p>
+              <p className="font-medium">
+                Queue is moving normally
+              </p>
+
               <p className="mt-1 text-sm leading-6 text-[#172019]/50">
-                Average processing time is currently around 18 minutes per
-                farmer.
+                Average processing time is currently around
+                18 minutes per farmer.
               </p>
             </div>
           </div>

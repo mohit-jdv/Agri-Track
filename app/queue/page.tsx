@@ -9,12 +9,8 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
-import {
-  Farmer,
-  getQueue,
-  saveQueue,
-} from "@/lib/demo-store";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 type QueueStatus =
   | "waiting"
@@ -22,20 +18,37 @@ type QueueStatus =
   | "serving"
   | "completed";
 
-type QueueItem = {
+type QueueRow = {
+  id: string;
+  booking_id: string;
+  farmer_id: string;
   token: string;
-  name: string;
+  centre_name: string;
+  queue_position: number | null;
+  status:
+    | "Waiting"
+    | "Arrived"
+    | "Serving"
+    | "Completed"
+    | "Cancelled";
+  estimated_wait_minutes: number | null;
+  created_at: string;
+  farmer_name: string;
   crop: string;
-  quantity: string;
+  quantity: number;
   slot: string;
-  status: QueueStatus;
 };
 
-const DEFAULT_TOKEN = "A-105";
+type QueueItem = QueueRow & {
+  displayStatus: QueueStatus;
+  name: string;
+  quantityLabel: string;
+};
+
 const ACTIVE_TOKEN_KEY = "agritrack-active-token";
 
-function getStatus(
-  status: Farmer["status"]
+function getDisplayStatus(
+  status: QueueRow["status"]
 ): QueueStatus {
   if (status === "Serving") return "serving";
   if (status === "Arrived") return "near";
@@ -46,74 +59,122 @@ function getStatus(
 export default function FarmerQueue() {
   const router = useRouter();
 
-  const [farmers, setFarmers] = useState<Farmer[]>([]);
+  const [queueRows, setQueueRows] = useState<QueueRow[]>([]);
   const [yourToken, setYourToken] =
-    useState(DEFAULT_TOKEN);
+    useState<string | null>(null);
+  const [farmerName, setFarmerName] =
+    useState("Farmer");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const loadQueue = useCallback(async () => {
+    setError("");
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    const user = session?.user;
+
+    if (!user) {
+      setLoading(false);
+      setError(
+        "Your session has expired. Please login again."
+      );
+      return;
+    }
+
+    const activeToken =
+      localStorage.getItem(ACTIVE_TOKEN_KEY);
+
+    setYourToken(activeToken);
+
+    const { data: queueData, error: queueError } =
+      await supabase.rpc("get_live_queue");
+
+    if (queueError) {
+      console.error(queueError);
+      setError("Unable to load the live queue.");
+      setLoading(false);
+      return;
+    }
+
+    const rows = (queueData ?? []) as QueueRow[];
+
+    setQueueRows(rows);
+
+    const currentFarmer = rows.find(
+      (row) => row.farmer_id === user.id
+    );
+
+    if (currentFarmer?.farmer_name) {
+      setFarmerName(currentFarmer.farmer_name);
+    }
+
+    setLoading(false);
+  }, []);
 
   useEffect(() => {
-    const loadData = () => {
-      setFarmers(getQueue());
-
-      const activeToken = localStorage.getItem(
-        ACTIVE_TOKEN_KEY
-      );
-
-      if (activeToken) {
-        setYourToken(activeToken);
-      }
-    };
-
-    loadData();
+    const initialLoad = window.setTimeout(() => {
+      void loadQueue();
+    }, 0);
 
     const updateQueue = () => {
-      setFarmers(getQueue());
-
-      const activeToken = localStorage.getItem(
-        ACTIVE_TOKEN_KEY
-      );
-
-      if (activeToken) {
-        setYourToken(activeToken);
-      }
+      void loadQueue();
     };
-
-    window.addEventListener("storage", updateQueue);
-
-    window.addEventListener(
-      "agritrack-queue-updated",
-      updateQueue
-    );
 
     window.addEventListener(
       "agritrack-active-token-updated",
       updateQueue
     );
 
-    return () => {
-      window.removeEventListener(
-        "storage",
-        updateQueue
-      );
+    /*
+     * Supabase Realtime
+     *
+     * Whenever a queue_entries row changes in Supabase,
+     * reload the live queue automatically.
+     */
+    const realtimeChannel = supabase
+      .channel("farmer-queue-realtime")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "queue_entries",
+        },
+        () => {
+          void loadQueue();
+        }
+      )
+      .subscribe((status) => {
+        console.log(
+          "Queue realtime status:",
+          status
+        );
+      });
 
-      window.removeEventListener(
-        "agritrack-queue-updated",
-        updateQueue
-      );
+    return () => {
+      window.clearTimeout(initialLoad);
 
       window.removeEventListener(
         "agritrack-active-token-updated",
         updateQueue
       );
+
+      void supabase.removeChannel(realtimeChannel);
     };
-  }, []);
+  }, [loadQueue]);
 
   const queue = useMemo<QueueItem[]>(
     () =>
-      farmers.map((farmer) => ({
-        ...farmer,
-        status: getStatus(farmer.status),
+      queueRows.map((row) => ({
+        ...row,
+        displayStatus: getDisplayStatus(row.status),
+        name: row.farmer_name || "Farmer",
+        quantityLabel: `${row.quantity} quintals`,
       })),
-    [farmers]
+    [queueRows]
   );
 
   const yourFarmer = useMemo(
@@ -124,14 +185,6 @@ export default function FarmerQueue() {
     [queue, yourToken]
   );
 
-  const servingFarmer = useMemo(
-    () =>
-      queue.find(
-        (farmer) => farmer.status === "serving"
-      ),
-    [queue]
-  );
-
   const yourIndex = useMemo(
     () =>
       queue.findIndex(
@@ -140,94 +193,29 @@ export default function FarmerQueue() {
     [queue, yourToken]
   );
 
-  const servingIndex = useMemo(
-    () =>
-      queue.findIndex(
-        (farmer) => farmer.status === "serving"
-      ),
-    [queue]
-  );
+  const farmersAhead = useMemo(() => {
+    if (yourIndex < 0) return 0;
 
-  const farmersAhead =
-    yourIndex >= 0 && servingIndex >= 0
-      ? Math.max(0, yourIndex - servingIndex)
-      : 0;
+    return queue
+      .slice(0, yourIndex)
+      .filter(
+        (farmer) =>
+          farmer.displayStatus !== "completed" &&
+          farmer.displayStatus !== "serving"
+      ).length;
+  }, [queue, yourIndex]);
 
   const isYourTurn =
-    yourFarmer?.status === "serving";
+    yourFarmer?.displayStatus === "serving";
 
   const estimatedWait = isYourTurn
     ? 0
-    : farmersAhead * 18;
+    : yourFarmer?.estimated_wait_minutes ??
+      farmersAhead * 6;
 
-  function refreshQueue() {
-    setFarmers(getQueue());
-
-    const activeToken = localStorage.getItem(
-      ACTIVE_TOKEN_KEY
-    );
-
-    if (activeToken) {
-      setYourToken(activeToken);
-    }
-  }
-
-  /*
-   * Demo-only control.
-   *
-   * Moves the current Serving farmer to Completed
-   * and the next Waiting/Arrived farmer to Serving.
-   *
-   * It also updates the shared active token so that
-   * farmer-facing pages follow the new token.
-   */
-  function simulateNextToken() {
-    const currentIndex = farmers.findIndex(
-      (farmer) => farmer.status === "Serving"
-    );
-
-    const nextIndex = farmers.findIndex(
-      (farmer, index) =>
-        index > currentIndex &&
-        (farmer.status === "Waiting" ||
-          farmer.status === "Arrived")
-    );
-
-    if (nextIndex === -1) return;
-
-    const nextToken = farmers[nextIndex].token;
-
-    const updated = farmers.map((farmer) => {
-      if (farmer.status === "Serving") {
-        return {
-          ...farmer,
-          status: "Completed" as const,
-        };
-      }
-
-      if (farmer.token === nextToken) {
-        return {
-          ...farmer,
-          status: "Serving" as const,
-        };
-      }
-
-      return farmer;
-    });
-
-    saveQueue(updated);
-
-    localStorage.setItem(
-      ACTIVE_TOKEN_KEY,
-      nextToken
-    );
-
-    window.dispatchEvent(
-      new Event("agritrack-active-token-updated")
-    );
-
-    setFarmers(updated);
-    setYourToken(nextToken);
+  async function refreshQueue() {
+    setLoading(true);
+    await loadQueue();
   }
 
   return (
@@ -237,10 +225,7 @@ export default function FarmerQueue() {
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 md:px-10">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#173F2A] text-[#F4F0E6]">
-              <Clock3
-                size={17}
-                strokeWidth={2}
-              />
+              <Clock3 size={17} strokeWidth={2} />
             </div>
 
             <div>
@@ -257,9 +242,7 @@ export default function FarmerQueue() {
           <div className="hidden items-center gap-7 md:flex">
             <button
               type="button"
-              onClick={() =>
-                router.push("/dashboard")
-              }
+              onClick={() => router.push("/dashboard")}
               className="text-sm text-[#172019]/50 transition hover:text-[#173F2A]"
             >
               Dashboard
@@ -274,9 +257,7 @@ export default function FarmerQueue() {
 
             <button
               type="button"
-              onClick={() =>
-                router.push("/procurement")
-              }
+              onClick={() => router.push("/procurement")}
               className="text-sm text-[#172019]/50 transition hover:text-[#173F2A]"
             >
               Procurement
@@ -284,9 +265,7 @@ export default function FarmerQueue() {
 
             <button
               type="button"
-              onClick={() =>
-                router.push("/payment")
-              }
+              onClick={() => router.push("/payment")}
               className="text-sm text-[#172019]/50 transition hover:text-[#173F2A]"
             >
               Payments
@@ -302,7 +281,12 @@ export default function FarmerQueue() {
             </button>
 
             <div className="hidden h-9 w-9 items-center justify-center rounded-full bg-[#D9C99A]/60 text-sm font-semibold md:flex">
-              RP
+              {farmerName
+                .split(" ")
+                .map((part) => part[0])
+                .slice(0, 2)
+                .join("")
+                .toUpperCase()}
             </div>
           </div>
         </div>
@@ -315,9 +299,7 @@ export default function FarmerQueue() {
           <div>
             <button
               type="button"
-              onClick={() =>
-                router.push("/dashboard")
-              }
+              onClick={() => router.push("/dashboard")}
               className="mb-6 flex items-center gap-2 text-sm text-[#172019]/45 transition hover:text-[#173F2A]"
             >
               <ArrowLeft size={15} />
@@ -325,7 +307,9 @@ export default function FarmerQueue() {
             </button>
 
             <p className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-[#5F8F45]">
-              Lasalgaon · Today
+              {yourFarmer?.centre_name ??
+                "Procurement Centre"}{" "}
+              · Today
             </p>
 
             <h1 className="text-4xl font-semibold tracking-[-0.06em] md:text-6xl">
@@ -333,20 +317,29 @@ export default function FarmerQueue() {
             </h1>
 
             <p className="mt-4 max-w-xl text-base leading-7 text-[#172019]/55">
-              Follow your position without waiting at
-              the centre.
+              Follow your position without waiting at the centre.
             </p>
           </div>
 
           <button
             type="button"
             onClick={refreshQueue}
-            className="flex items-center justify-center gap-2 rounded-[12px] border border-[#173F2A]/15 bg-white/35 px-5 py-3 text-sm font-medium transition hover:bg-white/70"
+            disabled={loading}
+            className="flex items-center justify-center gap-2 rounded-[12px] border border-[#173F2A]/15 bg-white/35 px-5 py-3 text-sm font-medium transition hover:bg-white/70 disabled:opacity-50"
           >
-            <RefreshCw size={15} />
+            <RefreshCw
+              size={15}
+              className={loading ? "animate-spin" : ""}
+            />
             Refresh
           </button>
         </div>
+
+        {error && (
+          <div className="mb-8 rounded-[12px] border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700">
+            {error}
+          </div>
+        )}
 
         {/* YOUR STATUS */}
         <div
@@ -370,7 +363,7 @@ export default function FarmerQueue() {
 
               <div className="mt-4 flex items-center gap-5">
                 <span className="text-6xl font-semibold tracking-[-0.07em] md:text-8xl">
-                  {yourToken}
+                  {yourToken ?? "—"}
                 </span>
 
                 {isYourTurn && (
@@ -389,7 +382,7 @@ export default function FarmerQueue() {
               >
                 {isYourTurn
                   ? "Please proceed to the procurement desk."
-                  : yourFarmer?.status === "near"
+                  : yourFarmer?.displayStatus === "near"
                     ? "You are next. Please stay ready."
                     : "We’ll notify you when your turn is near."}
               </p>
@@ -470,11 +463,8 @@ export default function FarmerQueue() {
                 </p>
 
                 <p className="mt-1 font-medium">
-                  Lasalgaon Procurement Centre
-                </p>
-
-                <p className="mt-1 text-sm text-[#172019]/45">
-                  Lasalgaon, Nashik
+                  {yourFarmer?.centre_name ??
+                    "Procurement Centre"}
                 </p>
               </div>
             </div>
@@ -499,8 +489,7 @@ export default function FarmerQueue() {
                 </p>
 
                 <p className="mt-1 text-sm text-[#172019]/45">
-                  You’ll be alerted when your turn is
-                  near.
+                  You’ll be alerted when your turn is near.
                 </p>
               </div>
             </div>
@@ -554,7 +543,7 @@ export default function FarmerQueue() {
 
                   return (
                     <tr
-                      key={farmer.token}
+                      key={farmer.id}
                       className={`border-b border-[#173F2A]/8 ${
                         isYou ? "bg-white/60" : ""
                       }`}
@@ -573,7 +562,7 @@ export default function FarmerQueue() {
 
                       <td className="px-4 py-5 text-sm">
                         {isYou
-                          ? "Ramesh Patil"
+                          ? farmerName
                           : farmer.name}
                       </td>
 
@@ -584,33 +573,35 @@ export default function FarmerQueue() {
                       <td className="px-4 py-5">
                         <span
                           className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ${
-                            farmer.status ===
+                            farmer.displayStatus ===
                             "serving"
                               ? "bg-[#173F2A] text-[#F4F0E6]"
-                              : farmer.status ===
+                              : farmer.displayStatus ===
                                   "completed"
                                 ? "bg-[#5F8F45]/15 text-[#173F2A]"
-                                : farmer.status ===
+                                : farmer.displayStatus ===
                                     "near"
                                   ? "bg-[#D78A32]/20 text-[#7A4B17]"
                                   : "bg-[#172019]/8 text-[#172019]/60"
                           }`}
                         >
-                          {farmer.status ===
+                          {farmer.displayStatus ===
                             "completed" && (
                             <Check size={12} />
                           )}
 
-                          {farmer.status ===
+                          {farmer.displayStatus ===
                             "serving" && (
                             <Clock3 size={12} />
                           )}
 
-                          {farmer.status === "near"
+                          {farmer.displayStatus ===
+                          "near"
                             ? "Next"
-                            : farmer.status === "serving"
+                            : farmer.displayStatus ===
+                                "serving"
                               ? "Serving"
-                              : farmer.status ===
+                              : farmer.displayStatus ===
                                   "completed"
                                 ? "Completed"
                                 : "Waiting"}
@@ -622,28 +613,6 @@ export default function FarmerQueue() {
               </tbody>
             </table>
           </div>
-        </div>
-
-        {/* DEMO CONTROL */}
-        <div className="mt-10 flex flex-col justify-between gap-4 rounded-[14px] border border-[#D78A32]/20 bg-[#D9C99A]/15 p-5 md:flex-row md:items-center">
-          <div>
-            <p className="text-sm font-medium">
-              Demo queue control
-            </p>
-
-            <p className="mt-1 text-xs leading-5 text-[#172019]/45">
-              Use this only during the presentation to
-              simulate the next token being served.
-            </p>
-          </div>
-
-          <button
-            type="button"
-            onClick={simulateNextToken}
-            className="rounded-[10px] bg-[#173F2A] px-4 py-3 text-sm font-medium text-[#F4F0E6] transition hover:bg-[#204D34]"
-          >
-            Simulate next token
-          </button>
         </div>
       </section>
     </main>

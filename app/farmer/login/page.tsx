@@ -3,14 +3,15 @@
 import { ArrowLeft, ArrowRight, Check, Leaf, ShieldCheck } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { supabase } from "@/lib/supabase";
 
-type Step = "mobile" | "otp" | "profile";
+type Step = "email" | "otp" | "profile";
 
 export default function FarmerLogin() {
   const router = useRouter();
 
-  const [step, setStep] = useState<Step>("mobile");
-  const [mobile, setMobile] = useState("");
+  const [step, setStep] = useState<Step>("email");
+  const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
 
   const [name, setName] = useState("");
@@ -19,21 +20,41 @@ export default function FarmerLogin() {
   const [state, setState] = useState("Maharashtra");
 
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   // Step 1: Send OTP
-  const sendOtp = () => {
+  const sendOtp = async () => {
     setError("");
 
-    if (mobile.length !== 10) {
-      setError("Please enter a valid 10-digit mobile number.");
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanEmail || !cleanEmail.includes("@")) {
+      setError("Please enter a valid email address.");
       return;
     }
 
+    setLoading(true);
+
+    const { error } = await supabase.auth.signInWithOtp({
+      email: cleanEmail,
+      options: {
+        shouldCreateUser: true,
+      },
+    });
+
+    setLoading(false);
+
+    if (error) {
+      setError(error.message);
+      return;
+    }
+
+    setEmail(cleanEmail);
     setStep("otp");
   };
 
   // Step 2: Verify OTP
-  const verifyOtp = () => {
+  const verifyOtp = async () => {
     setError("");
 
     if (otp.length !== 6) {
@@ -41,42 +62,82 @@ export default function FarmerLogin() {
       return;
     }
 
-    if (otp !== "123456") {
-      setError("Incorrect OTP. Use 123456 for demo.");
+    setLoading(true);
+
+    const { data, error } = await supabase.auth.verifyOtp({
+      email: email.trim().toLowerCase(),
+      token: otp,
+      type: "email",
+    });
+
+    setLoading(false);
+
+    if (error) {
+      setError("Incorrect or expired OTP. Please try again.");
       return;
     }
 
-    // Existing demo farmer
-    if (mobile === "9876543210") {
-      router.push("/dashboard");
+    if (!data.session) {
+      setError("Unable to create your session. Please try again.");
       return;
     }
 
-    // New farmer
     setStep("profile");
   };
 
   // Step 3: Complete farmer profile
-  const completeProfile = () => {
-    setError("");
+  const completeProfile = async () => {
+  setError("");
 
-    if (name.trim() === "") {
-      setError("Please enter your full name.");
-      return;
-    }
+  if (name.trim() === "") {
+    setError("Please enter your full name.");
+    return;
+  }
 
-    if (village.trim() === "") {
-      setError("Please enter your village.");
-      return;
-    }
+  if (village.trim() === "") {
+    setError("Please enter your village.");
+    return;
+  }
 
-    if (district.trim() === "") {
-      setError("Please enter your district.");
-      return;
-    }
+  if (district.trim() === "") {
+    setError("Please enter your district.");
+    return;
+  }
 
-    router.push("/dashboard");
-  };
+  setLoading(true);
+
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError || !user) {
+    setLoading(false);
+    setError("Your session has expired. Please login again.");
+    return;
+  }
+
+  const { error: profileError } = await supabase
+    .from("profiles")
+    .upsert({
+      id: user.id,
+      name: name.trim(),
+      village: village.trim(),
+      district: district.trim(),
+      state,
+      updated_at: new Date().toISOString(),
+    });
+
+  setLoading(false);
+
+  if (profileError) {
+    console.error(profileError);
+    setError("Unable to save your profile. Please try again.");
+    return;
+  }
+
+  router.push("/dashboard");
+};
 
   return (
     <main className="min-h-screen bg-[#F4F0E6] text-[#172019]">
@@ -138,9 +199,9 @@ export default function FarmerLogin() {
             <div className="mt-10 flex items-center gap-3">
               <ProgressStep
                 number="01"
-                label="Mobile"
-                active={step === "mobile"}
-                completed={step !== "mobile"}
+                label="Email"
+                active={step === "email"}
+                completed={step !== "email"}
               />
 
               <div className="h-px w-8 bg-[#173F2A]/15" />
@@ -166,41 +227,33 @@ export default function FarmerLogin() {
           {/* Right section */}
           <div className="rounded-[16px] border border-[#173F2A]/15 bg-white/45 p-7 md:p-10">
             {/* STEP 1 */}
-            {step === "mobile" && (
+            {step === "email" && (
               <>
                 <FormHeader
                   step="Step 01"
-                  title="Enter your mobile number"
-                  description="We'll use your mobile number to securely access your farmer account."
+                  title="Enter your email"
+                  description="We'll send a secure verification code to your email address."
                 />
 
                 <label
-                  htmlFor="mobile"
+                  htmlFor="email"
                   className="mb-2 block text-sm font-medium"
                 >
-                  Mobile number
+                  Email address
                 </label>
 
-                <div className="flex overflow-hidden rounded-[12px] border border-[#173F2A]/20 bg-[#F4F0E6] focus-within:border-[#173F2A]">
-                  <div className="flex items-center border-r border-[#173F2A]/15 px-4 text-sm text-[#172019]/55">
-                    +91
-                  </div>
-
-                  <input
-                    id="mobile"
-                    type="tel"
-                    inputMode="numeric"
-                    maxLength={10}
-                    value={mobile}
-                    onChange={(event) => {
-                      const value = event.target.value.replace(/\D/g, "");
-                      setMobile(value);
-                      setError("");
-                    }}
-                    placeholder="10-digit mobile number"
-                    className="w-full bg-transparent px-4 py-4 text-base outline-none placeholder:text-[#172019]/30"
-                  />
-                </div>
+                <input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => {
+                    setEmail(event.target.value);
+                    setError("");
+                  }}
+                  placeholder="you@example.com"
+                  className="w-full rounded-[12px] border border-[#173F2A]/20 bg-[#F4F0E6] px-4 py-4 text-base outline-none placeholder:text-[#172019]/30 focus:border-[#173F2A]"
+                />
 
                 {error !== "" && (
                   <p className="mt-3 text-sm text-red-700">
@@ -211,10 +264,10 @@ export default function FarmerLogin() {
                 <button
                   type="button"
                   onClick={sendOtp}
-                  disabled={mobile.length !== 10}
+                  disabled={loading || !email.trim()}
                   className="mt-5 flex w-full items-center justify-between rounded-[12px] bg-[#173F2A] px-5 py-4 text-sm font-medium text-[#F4F0E6] transition hover:bg-[#204D34] disabled:cursor-not-allowed disabled:opacity-35"
                 >
-                  <span>Continue</span>
+                  <span>{loading ? "Sending..." : "Send OTP"}</span>
                   <ArrowRight size={18} />
                 </button>
               </>
@@ -225,12 +278,8 @@ export default function FarmerLogin() {
               <>
                 <FormHeader
                   step="Step 02"
-                  title="Verify your number"
-                  description={
-                    "Enter the verification code sent to +91 " +
-                    mobile +
-                    "."
-                  }
+                  title="Verify your email"
+                  description={`Enter the verification code sent to ${email}.`}
                 />
 
                 <label
@@ -244,6 +293,7 @@ export default function FarmerLogin() {
                   id="otp"
                   type="text"
                   inputMode="numeric"
+                  autoComplete="one-time-code"
                   maxLength={6}
                   value={otp}
                   onChange={(event) => {
@@ -264,31 +314,30 @@ export default function FarmerLogin() {
                 <button
                   type="button"
                   onClick={verifyOtp}
-                  disabled={otp.length !== 6}
+                  disabled={loading || otp.length !== 6}
                   className="mt-5 flex w-full items-center justify-between rounded-[12px] bg-[#173F2A] px-5 py-4 text-sm font-medium text-[#F4F0E6] transition hover:bg-[#204D34] disabled:cursor-not-allowed disabled:opacity-35"
                 >
-                  <span>Verify & continue</span>
+                  <span>
+                    {loading ? "Verifying..." : "Verify & continue"}
+                  </span>
                   <ArrowRight size={18} />
                 </button>
 
                 <button
                   type="button"
                   onClick={() => {
-                    setStep("mobile");
+                    setStep("email");
                     setOtp("");
                     setError("");
                   }}
                   className="mt-4 w-full text-center text-sm text-[#173F2A]/60 hover:text-[#173F2A]"
                 >
-                  Change mobile number
+                  Change email address
                 </button>
 
                 <div className="mt-8 border-t border-[#173F2A]/10 pt-5">
                   <p className="text-xs leading-5 text-[#172019]/40">
-                    Demo mode: use OTP{" "}
-                    <span className="font-semibold text-[#173F2A]">
-                      123456
-                    </span>
+                    Check your email inbox for the 6-digit verification code.
                   </p>
                 </div>
               </>
@@ -413,7 +462,7 @@ export default function FarmerLogin() {
                   onClick={completeProfile}
                   className="mt-6 flex w-full items-center justify-between rounded-[12px] bg-[#173F2A] px-5 py-4 text-sm font-medium text-[#F4F0E6] transition hover:bg-[#204D34]"
                 >
-                  <span>Complete registration</span>
+                  <span>{loading ? "Saving..." : "Complete registration"}</span>
                   <ArrowRight size={18} />
                 </button>
               </>
@@ -505,4 +554,3 @@ function ProgressStep({
     </div>
   );
 }
-
