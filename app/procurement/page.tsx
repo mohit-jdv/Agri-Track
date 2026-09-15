@@ -12,7 +12,7 @@ import {
   ShieldCheck,
   Wallet,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -42,7 +42,7 @@ type ProcurementData = {
   indicativePrice: number;
 };
 
-export default function ProcurementPage() {
+function ProcurementContent() {
   const searchParams = useSearchParams();
 const tokenFromUrl = searchParams.get("token");
   const router = useRouter();
@@ -697,3 +697,15 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
+export default function ProcurementPage() {
+    return (
+        <Suspense
+              fallback={
+                      <main className="min-h-screen bg-[#F4F0E6] text-[#172019]" />
+                            }
+                                >
+                                      <ProcurementContent />
+                                          </Suspense>
+                                            );
+                                            }
+}
