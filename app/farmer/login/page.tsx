@@ -130,13 +130,18 @@ export default function FarmerLogin() {
 
   setLoading(false);
 
-  if (profileError) {
-    console.error(profileError);
-    setError("Unable to save your profile. Please try again.");
-    return;
-  }
+if (profileError) {
+  console.error("PROFILE SAVE ERROR:", profileError);
+  setError(`Unable to save profile: ${profileError.message}`);
+  return;
+}
 
-  router.push("/dashboard");
+console.log("PROFILE SAVED — navigating to dashboard");
+console.log("CURRENT URL:", window.location.href);
+
+await router.push("/dashboard");
+
+console.log("NAVIGATION COMMAND FINISHED");
 };
 
   return (

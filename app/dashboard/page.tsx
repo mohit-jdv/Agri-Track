@@ -221,7 +221,13 @@ export default function Dashboard() {
     0
   );
 
-  const derivedNotifications = [];
+  const derivedNotifications: {
+  id: string;
+  title: string;
+  message: string;
+  time: string;
+  read: boolean;
+}[] = [];
 
   if (yourFarmer?.status === "Serving") {
     derivedNotifications.push({
